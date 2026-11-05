@@ -1,8 +1,10 @@
 package checker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -442,5 +444,43 @@ func TestRequestHeaders(t *testing.T) {
 	newChecker(10).Check(context.Background(), s.at("a.test", "/"))
 	if userAgent != "site-checker-test" {
 		t.Errorf("User-Agent = %q", userAgent)
+	}
+}
+
+func TestLogsDoNotContainQueryStrings(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	const query = "?token=secret-value"
+	refused := newSite(t, func(http.ResponseWriter, *http.Request) {})
+	refusedURL := refused.at("a.test", "/"+query)
+	refused.Close()
+
+	slow := newSite(t, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(tlsServer.Close)
+
+	checker := newChecker(10)
+	checker.cfg.Timeout = 200 * time.Millisecond
+	for _, target := range []string{
+		refusedURL,
+		"http://missing.test/" + query,
+		"http://internal.test/" + query,
+		slow.at("a.test", "/"+query),
+		"https://a.test:" + portOf(t, tlsServer) + "/" + query,
+	} {
+		if out := checker.Check(context.Background(), target); out.ErrorCode == "" {
+			t.Errorf("%s: expected a failure", target)
+		}
+	}
+
+	if logs.Len() == 0 {
+		t.Fatal("nothing was logged, so this test proves nothing")
+	}
+	if strings.Contains(logs.String(), "secret-value") {
+		t.Errorf("logs contain the query string:\n%s", logs.String())
 	}
 }
