@@ -24,7 +24,10 @@ type Screenshotter interface {
 
 // ScreenshotStorage keeps screenshot files. browser.Storage implements it.
 type ScreenshotStorage interface {
-	Save(checkID int64, png []byte) (string, error)
+	// Find returns the storage key of a URL's screenshot and whether it exists.
+	Find(pageURL string) (string, bool, error)
+	// Save stores a URL's screenshot and returns its storage key.
+	Save(pageURL string, png []byte) (string, error)
 }
 
 // Processor runs the stages of a check, persisting each result as soon as the
@@ -112,12 +115,28 @@ func (p *Processor) captureScreenshot(ctx context.Context, check *models.Check, 
 		return models.StageFailed, nil
 	}
 
+	// A page already captured is not captured again. Nothing was rendered, so the
+	// browser's final URL and the DOM's metadata stay unknown for this check.
+	key, exists, err := p.files.Find(check.URL)
+	if err != nil {
+		log.Error("look up screenshot", "error", err)
+		return fail("The screenshot could not be stored.")
+	}
+	if exists {
+		result := models.ScreenshotResult{Status: models.StageSuccess, Path: key}
+		if err := p.store.SaveScreenshotResult(ctx, lease, result); err != nil {
+			log.Error("save reused screenshot", "error", err)
+			return models.StageFailed, nil
+		}
+		return models.StageSuccess, nil
+	}
+
 	capture, err := p.browser.Capture(ctx, check.URL)
 	if err != nil {
 		log.Warn("capture screenshot", "error", err)
 		return fail(screenshotMessage(err))
 	}
-	key, err := p.files.Save(check.ID, capture.PNG)
+	key, err = p.files.Save(check.URL, capture.PNG)
 	if err != nil {
 		log.Error("store screenshot", "error", err)
 		return fail("The screenshot could not be stored.")

@@ -48,19 +48,25 @@ func (f *fakeBrowser) Capture(context.Context, string) (*browser.Capture, error)
 }
 
 type fakeFiles struct {
-	saved map[int64][]byte
-	err   error
+	existing bool
+	findErr  error
+	saved    map[string][]byte
+	err      error
 }
 
-func (f *fakeFiles) Save(id int64, png []byte) (string, error) {
+func (f *fakeFiles) Find(string) (string, bool, error) {
+	return "site.png", f.existing, f.findErr
+}
+
+func (f *fakeFiles) Save(url string, png []byte) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}
 	if f.saved == nil {
-		f.saved = map[int64][]byte{}
+		f.saved = map[string][]byte{}
 	}
-	f.saved[id] = png
-	return fmt.Sprintf("%d.png", id), nil
+	f.saved[url] = png
+	return "site.png", nil
 }
 
 func working() *fakeBrowser {
@@ -97,12 +103,49 @@ func TestProcessHTMLPage(t *testing.T) {
 	if len(store.metadata) != 1 || store.metadata[0].Title != "Hello" || store.metadata[0].Description != "World" {
 		t.Errorf("metadata = %+v", store.metadata)
 	}
-	if string(files.saved[1]) != "png" {
+	if string(files.saved[s.at("a.test", "/")]) != "png" {
 		t.Errorf("saved = %v", files.saved)
 	}
 	shot := store.screenshot
-	if shot == nil || shot.Status != models.StageSuccess || shot.Path != "1.png" || shot.BrowserFinalURL != "https://final.example/" {
+	if shot == nil || shot.Status != models.StageSuccess || shot.Path != "site.png" || shot.BrowserFinalURL != "https://final.example/" {
 		t.Errorf("screenshot = %+v", shot)
+	}
+}
+
+func TestProcessReusesExistingScreenshot(t *testing.T) {
+	s := htmlSite(t, 200, `<title>Hello</title>`)
+	store, b, files := &fakeResults{}, working(), &fakeFiles{existing: true}
+	outcome := process(store, b, files, s.at("a.test", "/"))
+
+	if b.calls != 0 {
+		t.Errorf("the browser ran %d times for a page already captured", b.calls)
+	}
+	if len(files.saved) != 0 {
+		t.Errorf("saved = %v", files.saved)
+	}
+	if outcome.Status != models.StatusCompleted || outcome.ScreenshotStatus != models.StageSuccess || outcome.MetadataStatus != models.StageSuccess {
+		t.Errorf("outcome = %+v", outcome)
+	}
+	shot := store.screenshot
+	if shot == nil || shot.Status != models.StageSuccess || shot.Path != "site.png" || shot.BrowserFinalURL != "" {
+		t.Errorf("screenshot = %+v", shot)
+	}
+	// The HTTP stage and metadata still run: only the capture is skipped.
+	if store.http == nil || !store.http.IsAvailable || store.metadata[0].Title != "Hello" {
+		t.Errorf("HTTP = %+v, metadata = %+v", store.http, store.metadata)
+	}
+}
+
+func TestProcessLookupFailureKeepsCheckCompleted(t *testing.T) {
+	s := htmlSite(t, 200, `<title>T</title>`)
+	store, b := &fakeResults{}, working()
+	outcome := process(store, b, &fakeFiles{findErr: errors.New("permission denied at /app/storage")}, s.at("a.test", "/"))
+
+	if outcome.Status != models.StatusCompleted || outcome.ScreenshotStatus != models.StageFailed {
+		t.Errorf("outcome = %+v", outcome)
+	}
+	if strings.Contains(store.screenshot.Error, "/app") {
+		t.Errorf("a filesystem path reached the result: %q", store.screenshot.Error)
 	}
 }
 

@@ -54,6 +54,8 @@ A screenshot failure must not invalidate a successful HTTP availability check.
 - **HTTP check:** uses GET and verifies TLS certificates. A certificate error ends the check with `tls_error`.
 - **Metadata:** extracted from the raw HTML of the final response, for HTML responses only. Title and description are decoded to UTF-8 using the declared charset. If either value is empty and the screenshot stage rendered the page, it is filled from the rendered DOM, so client-rendered pages are covered.
 - **Screenshot:** captured for any final HTML response, including 404 and 500, because an error page is useful evidence. Skipped when no final response was received or the response is not HTML. Captures the viewport only, after the `load` event plus `BROWSER_SETTLE_DELAY`, all within `BROWSER_TIMEOUT`.
+- **Screenshot reuse:** each normalized URL has one screenshot file. If the file exists, the check uses it and Chromium does not run, so `browser_final_url` and DOM metadata stay empty for that check. The HTTP and metadata stages always run. A reused screenshot can be older than the check that references it; nothing refreshes it yet.
+- **Screenshot file names:** the unpadded base64url SHA-256 of the normalized URL, such as `DxFdsGK3wN0DCxaHjJnepcNUtJ3DezjriEYXnHeD6dc.png`. Normalization only changes what cannot alter the server's response: scheme and host case, a host's trailing dot, default ports, an empty path, and the fragment.
 - The result of each stage is persisted as soon as the stage ends, so a browser crash cannot lose the HTTP result.
 
 ## 4. Redirect Handling
@@ -592,7 +594,7 @@ A check returned to the queue this way does not consume an attempt. `stop_grace_
 
 ### Retention
 
-If `CHECK_RETENTION` is above zero, a background job deletes older checks with their screenshot files. The default of `0` keeps everything, so monitor disk usage.
+If `CHECK_RETENTION` is above zero, a background job deletes older checks, and any screenshot file no remaining check references. Several checks can share one file. The default of `0` keeps everything, so monitor disk usage.
 
 ## 10. Security Requirements
 

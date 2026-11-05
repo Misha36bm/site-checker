@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -447,10 +448,29 @@ func TestRequestHeaders(t *testing.T) {
 	}
 }
 
+// lockedBuffer collects logs from several goroutines: SetDefault also redirects the
+// standard logger, which the test servers write to from their own.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestLogsDoNotContainQueryStrings(t *testing.T) {
-	var logs bytes.Buffer
+	logs := &lockedBuffer{}
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
 	const query = "?token=secret-value"
@@ -477,10 +497,11 @@ func TestLogsDoNotContainQueryStrings(t *testing.T) {
 		}
 	}
 
-	if logs.Len() == 0 {
+	logged := logs.String()
+	if logged == "" {
 		t.Fatal("nothing was logged, so this test proves nothing")
 	}
-	if strings.Contains(logs.String(), "secret-value") {
-		t.Errorf("logs contain the query string:\n%s", logs.String())
+	if strings.Contains(logged, "secret-value") {
+		t.Errorf("logs contain the query string:\n%s", logged)
 	}
 }
