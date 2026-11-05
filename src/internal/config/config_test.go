@@ -66,29 +66,47 @@ func TestLoadBlocksEverythingByDefault(t *testing.T) {
 	}
 }
 
+func TestLoadScreenshotMaxAge(t *testing.T) {
+	app, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.Browser.MaxAge != 24*time.Hour {
+		t.Errorf("default = %s", app.Browser.MaxAge)
+	}
+	app, err = Load(env(map[string]string{"SCREENSHOT_MAX_AGE": "0"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.Browser.MaxAge != 0 {
+		t.Errorf("zero = %s", app.Browser.MaxAge)
+	}
+}
+
 func TestLoadRejectsInvalidValues(t *testing.T) {
 	cases := map[string]map[string]string{
-		"port not a number":    {"APP_PORT": "http"},
-		"port zero":            {"APP_PORT": "0"},
-		"port too large":       {"APP_PORT": "70000"},
-		"bad duration":         {"APP_SHUTDOWN_TIMEOUT": "soon"},
-		"negative duration":    {"APP_SHUTDOWN_TIMEOUT": "-1s"},
-		"no workers":           {"MAX_CONCURRENT_CHECKS": "0"},
-		"zero poll":            {"WORKER_POLL_INTERVAL": "0s"},
-		"short lock":           {"CHECK_LOCK_TTL": "1s"},
-		"zero attempts":        {"CHECK_MAX_ATTEMPTS": "0"},
-		"zero queue":           {"MAX_PENDING_CHECKS": "0"},
-		"zero body limit":      {"API_MAX_BODY_BYTES": "0"},
-		"zero http timeout":    {"HTTP_TIMEOUT": "0s"},
-		"negative redirects":   {"HTTP_MAX_REDIRECTS": "-1"},
-		"bad cidr":             {"SSRF_ALLOWED_CIDRS": "10.0.0.0/8,nonsense"},
-		"ip without mask":      {"SSRF_ALLOWED_CIDRS": "10.0.0.1"},
-		"zero browser timeout": {"BROWSER_TIMEOUT": "0s"},
-		"viewport too wide":    {"BROWSER_VIEWPORT_WIDTH": "4000"},
-		"viewport too tall":    {"BROWSER_VIEWPORT_HEIGHT": "3000"},
-		"zero viewport":        {"BROWSER_VIEWPORT_WIDTH": "0"},
-		"no browser slots":     {"BROWSER_MAX_CONCURRENCY": "0"},
-		"zero screenshot size": {"SCREENSHOT_MAX_BYTES": "0"},
+		"port not a number":       {"APP_PORT": "http"},
+		"port zero":               {"APP_PORT": "0"},
+		"port too large":          {"APP_PORT": "70000"},
+		"bad duration":            {"APP_SHUTDOWN_TIMEOUT": "soon"},
+		"negative duration":       {"APP_SHUTDOWN_TIMEOUT": "-1s"},
+		"no workers":              {"MAX_CONCURRENT_CHECKS": "0"},
+		"zero poll":               {"WORKER_POLL_INTERVAL": "0s"},
+		"short lock":              {"CHECK_LOCK_TTL": "1s"},
+		"zero attempts":           {"CHECK_MAX_ATTEMPTS": "0"},
+		"zero queue":              {"MAX_PENDING_CHECKS": "0"},
+		"zero body limit":         {"API_MAX_BODY_BYTES": "0"},
+		"zero http timeout":       {"HTTP_TIMEOUT": "0s"},
+		"negative redirects":      {"HTTP_MAX_REDIRECTS": "-1"},
+		"bad cidr":                {"SSRF_ALLOWED_CIDRS": "10.0.0.0/8,nonsense"},
+		"ip without mask":         {"SSRF_ALLOWED_CIDRS": "10.0.0.1"},
+		"zero browser timeout":    {"BROWSER_TIMEOUT": "0s"},
+		"viewport too wide":       {"BROWSER_VIEWPORT_WIDTH": "4000"},
+		"viewport too tall":       {"BROWSER_VIEWPORT_HEIGHT": "3000"},
+		"zero viewport":           {"BROWSER_VIEWPORT_WIDTH": "0"},
+		"no browser slots":        {"BROWSER_MAX_CONCURRENCY": "0"},
+		"zero screenshot size":    {"SCREENSHOT_MAX_BYTES": "0"},
+		"negative screenshot age": {"SCREENSHOT_MAX_AGE": "-1h"},
 	}
 	for name, values := range cases {
 		t.Run(name, func(t *testing.T) {

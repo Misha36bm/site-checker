@@ -42,6 +42,7 @@ type Browser struct {
 	Concurrency    int
 	StoragePath    string
 	MaxBytes       int64
+	MaxAge         time.Duration
 }
 
 // Largest allowed viewport. Screenshots capture exactly this area, so it bounds
@@ -160,6 +161,10 @@ func loadBrowser(get Getter) (Browser, error) {
 	if err != nil {
 		return Browser{}, err
 	}
+	maxAge, err := Duration(get, "SCREENSHOT_MAX_AGE", 24*time.Hour)
+	if err != nil {
+		return Browser{}, err
+	}
 	return Browser{
 		CDPURL:         String(get, "BROWSER_CDP_URL", "http://browser:9222"),
 		ProxyListen:    String(get, "BROWSER_PROXY_LISTEN", "0.0.0.0:3128"),
@@ -170,6 +175,7 @@ func loadBrowser(get Getter) (Browser, error) {
 		Concurrency:    concurrency,
 		StoragePath:    String(get, "SCREENSHOT_STORAGE_PATH", "/app/storage/screenshots"),
 		MaxBytes:       int64(maxBytes),
+		MaxAge:         maxAge,
 	}, nil
 }
 

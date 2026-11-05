@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Misha36bm/site-checker/src/internal/browser"
 	"github.com/Misha36bm/site-checker/src/internal/models"
@@ -47,6 +48,8 @@ func (f *fakeBrowser) Capture(context.Context, string) (*browser.Capture, error)
 	return f.capture, f.err
 }
 
+var capturedLongAgo = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
 type fakeFiles struct {
 	existing bool
 	findErr  error
@@ -54,19 +57,19 @@ type fakeFiles struct {
 	err      error
 }
 
-func (f *fakeFiles) Find(string) (string, bool, error) {
-	return "site.png", f.existing, f.findErr
+func (f *fakeFiles) FindReusable(string) (browser.Stored, bool, error) {
+	return browser.Stored{Key: "site.png", CapturedAt: capturedLongAgo}, f.existing, f.findErr
 }
 
-func (f *fakeFiles) Save(url string, png []byte) (string, error) {
+func (f *fakeFiles) Save(url string, _ int, png []byte) (browser.Stored, error) {
 	if f.err != nil {
-		return "", f.err
+		return browser.Stored{}, f.err
 	}
 	if f.saved == nil {
 		f.saved = map[string][]byte{}
 	}
 	f.saved[url] = png
-	return "site.png", nil
+	return browser.Stored{Key: "site.png", CapturedAt: time.Now().UTC()}, nil
 }
 
 func working() *fakeBrowser {
@@ -110,6 +113,9 @@ func TestProcessHTMLPage(t *testing.T) {
 	if shot == nil || shot.Status != models.StageSuccess || shot.Path != "site.png" || shot.BrowserFinalURL != "https://final.example/" {
 		t.Errorf("screenshot = %+v", shot)
 	}
+	if time.Since(shot.CapturedAt) > time.Minute {
+		t.Errorf("captured at = %v", shot.CapturedAt)
+	}
 }
 
 func TestProcessReusesExistingScreenshot(t *testing.T) {
@@ -130,9 +136,74 @@ func TestProcessReusesExistingScreenshot(t *testing.T) {
 	if shot == nil || shot.Status != models.StageSuccess || shot.Path != "site.png" || shot.BrowserFinalURL != "" {
 		t.Errorf("screenshot = %+v", shot)
 	}
+	if !shot.CapturedAt.Equal(capturedLongAgo) {
+		t.Errorf("captured at = %v, want the original capture time", shot.CapturedAt)
+	}
 	// The HTTP stage and metadata still run: only the capture is skipped.
 	if store.http == nil || !store.http.IsAvailable || store.metadata[0].Title != "Hello" {
 		t.Errorf("HTTP = %+v, metadata = %+v", store.http, store.metadata)
+	}
+}
+
+// A site that recovers must not stay frozen on its error page, and one that breaks
+// must not hide behind its working page.
+func TestErrorPagesAreNeverReused(t *testing.T) {
+	status := http.StatusInternalServerError
+	s := newSite(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(status)
+	})
+	dir := t.TempDir()
+	files, err := browser.NewStorage(dir, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := s.at("a.test", "/")
+	check := func() (*fakeBrowser, *fakeResults) {
+		t.Helper()
+		store, b := &fakeResults{}, working()
+		if outcome := process(store, b, files, target); outcome.ScreenshotStatus != models.StageSuccess {
+			t.Fatalf("outcome = %+v", outcome)
+		}
+		return b, store
+	}
+
+	b, first := check() // site is down
+	if b.calls != 1 {
+		t.Errorf("error page: browser ran %d times", b.calls)
+	}
+	b, again := check() // still down: captured afresh, same file
+	if b.calls != 1 {
+		t.Errorf("repeated error page: browser ran %d times", b.calls)
+	}
+	if first.screenshot.Path != again.screenshot.Path || !strings.HasSuffix(again.screenshot.Path, "-500.png") {
+		t.Errorf("paths = %q, %q", first.screenshot.Path, again.screenshot.Path)
+	}
+
+	status = http.StatusOK // site recovers
+	b, recovered := check()
+	if b.calls != 1 {
+		t.Errorf("recovered site: browser ran %d times, so the error page was reused", b.calls)
+	}
+	if strings.HasSuffix(recovered.screenshot.Path, "-500.png") {
+		t.Errorf("path = %q", recovered.screenshot.Path)
+	}
+
+	b, reused := check() // still fine: reused
+	if b.calls != 0 {
+		t.Errorf("working page: browser ran %d times, want reuse", b.calls)
+	}
+	if reused.screenshot.Path != recovered.screenshot.Path {
+		t.Errorf("paths = %q, %q", reused.screenshot.Path, recovered.screenshot.Path)
+	}
+
+	status = http.StatusInternalServerError // site breaks again
+	b, broken := check()
+	if b.calls != 1 {
+		t.Errorf("broken site: browser ran %d times, so the working page hid the error", b.calls)
+	}
+	if !strings.HasSuffix(broken.screenshot.Path, "-500.png") {
+		t.Errorf("path = %q", broken.screenshot.Path)
 	}
 }
 

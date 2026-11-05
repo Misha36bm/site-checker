@@ -249,10 +249,12 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		check := create(t, db, "https://example.com")
 		lease := claim(t, db, longTTL).Lease()
 
+		capturedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 		err := db.SaveScreenshotResult(ctx, lease, models.ScreenshotResult{
 			Status:          models.StageSuccess,
 			Path:            "1.png",
 			BrowserFinalURL: "https://final.example/",
+			CapturedAt:      capturedAt,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -264,6 +266,9 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		if got.BrowserFinalURL == nil || *got.BrowserFinalURL != "https://final.example/" || got.ScreenshotError != nil {
 			t.Errorf("final URL = %v, error = %v", got.BrowserFinalURL, got.ScreenshotError)
 		}
+		if got.ScreenshotCapturedAt == nil || !got.ScreenshotCapturedAt.Equal(capturedAt) || got.ScreenshotCapturedAt.Location() != time.UTC {
+			t.Errorf("captured at = %v", got.ScreenshotCapturedAt)
+		}
 
 		err = db.SaveScreenshotResult(ctx, lease, models.ScreenshotResult{Status: models.StageFailed, Error: "failed"})
 		if err != nil {
@@ -272,6 +277,9 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		got = get(t, db, check.ID)
 		if got.ScreenshotPath != nil || got.ScreenshotError == nil || *got.ScreenshotError != "failed" {
 			t.Errorf("path = %v, error = %v", got.ScreenshotPath, got.ScreenshotError)
+		}
+		if got.ScreenshotCapturedAt != nil {
+			t.Errorf("a failed screenshot has a capture time: %v", got.ScreenshotCapturedAt)
 		}
 	})
 
@@ -297,7 +305,7 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		if err := db.SaveMetadataResult(ctx, first, models.MetadataResult{Title: "Old", Description: "Old"}); err != nil {
 			t.Fatal(err)
 		}
-		old := models.ScreenshotResult{Status: models.StageSuccess, Path: "1.png", BrowserFinalURL: "https://old.example/"}
+		old := models.ScreenshotResult{Status: models.StageSuccess, Path: "1.png", BrowserFinalURL: "https://old.example/", CapturedAt: time.Now()}
 		if err := db.SaveScreenshotResult(ctx, first, old); err != nil {
 			t.Fatal(err)
 		}
@@ -311,7 +319,7 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		if got.Title != nil || got.Description != nil || got.MetadataStatus != models.StagePending {
 			t.Errorf("got = %+v", got)
 		}
-		if got.ScreenshotPath != nil || got.BrowserFinalURL != nil || got.ScreenshotStatus != models.StagePending {
+		if got.ScreenshotPath != nil || got.BrowserFinalURL != nil || got.ScreenshotCapturedAt != nil || got.ScreenshotStatus != models.StagePending {
 			t.Errorf("got = %+v", got)
 		}
 	})

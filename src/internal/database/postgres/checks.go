@@ -15,7 +15,7 @@ import (
 const checkColumns = `id, url, status, final_url, browser_final_url, error_code, error_message,
 	http_status_code, is_available, response_time_ms, redirect_count, redirect_chain,
 	metadata_status, title, description, screenshot_status, screenshot_error, screenshot_path,
-	attempts, locked_until, created_at, started_at, completed_at`
+	screenshot_captured_at, attempts, locked_until, created_at, started_at, completed_at`
 
 func scanCheck(row *sql.Row) (*models.Check, error) {
 	var (
@@ -26,7 +26,7 @@ func scanCheck(row *sql.Row) (*models.Check, error) {
 		&c.ID, &c.URL, &c.Status, &c.FinalURL, &c.BrowserFinalURL, &c.ErrorCode, &c.ErrorMessage,
 		&c.HTTPStatusCode, &c.IsAvailable, &c.ResponseTimeMS, &c.RedirectCount, &chain,
 		&c.MetadataStatus, &c.Title, &c.Description, &c.ScreenshotStatus, &c.ScreenshotError, &c.ScreenshotPath,
-		&c.Attempts, &c.LockedUntil, &c.CreatedAt, &c.StartedAt, &c.CompletedAt,
+		&c.ScreenshotCapturedAt, &c.Attempts, &c.LockedUntil, &c.CreatedAt, &c.StartedAt, &c.CompletedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -37,7 +37,7 @@ func scanCheck(row *sql.Row) (*models.Check, error) {
 		}
 	}
 	c.CreatedAt = c.CreatedAt.UTC()
-	for _, t := range []**time.Time{&c.LockedUntil, &c.StartedAt, &c.CompletedAt} {
+	for _, t := range []**time.Time{&c.ScreenshotCapturedAt, &c.LockedUntil, &c.StartedAt, &c.CompletedAt} {
 		if *t != nil {
 			utc := (*t).UTC()
 			*t = &utc
@@ -139,6 +139,7 @@ func (d *DB) SaveHTTPResult(ctx context.Context, lease models.Lease, r models.HT
 			screenshot_status = 'pending',
 			screenshot_path = NULL,
 			screenshot_error = NULL,
+			screenshot_captured_at = NULL,
 			browser_final_url = NULL
 		WHERE id = $1 AND attempts = $2 AND status = 'running'`,
 		lease.CheckID, lease.Attempt, r.FinalURL, r.StatusCode, r.IsAvailable, r.ResponseTimeMS,
@@ -160,14 +161,19 @@ func (d *DB) SaveMetadataResult(ctx context.Context, lease models.Lease, r model
 
 // SaveScreenshotResult stores the screenshot stage's result.
 func (d *DB) SaveScreenshotResult(ctx context.Context, lease models.Lease, r models.ScreenshotResult) error {
+	var capturedAt *time.Time // stays NULL without a screenshot
+	if !r.CapturedAt.IsZero() {
+		capturedAt = &r.CapturedAt
+	}
 	result, err := d.sql.ExecContext(ctx, `
 		UPDATE checks SET
 			screenshot_status = $3,
 			screenshot_path = NULLIF($4, ''),
 			screenshot_error = NULLIF($5, ''),
-			browser_final_url = NULLIF($6, '')
+			browser_final_url = NULLIF($6, ''),
+			screenshot_captured_at = $7
 		WHERE id = $1 AND attempts = $2 AND status = 'running'`,
-		lease.CheckID, lease.Attempt, r.Status, r.Path, r.Error, r.BrowserFinalURL)
+		lease.CheckID, lease.Attempt, r.Status, r.Path, r.Error, r.BrowserFinalURL, capturedAt)
 	return leaseResult(result, err)
 }
 

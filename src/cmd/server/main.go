@@ -80,7 +80,7 @@ func run(ctx context.Context, get config.Getter) error {
 		UserAgent:    app.HTTP.UserAgent,
 	}, policy, dialer.DialContext)
 
-	screenshots, err := browser.NewStorage(app.Browser.StoragePath)
+	screenshots, err := browser.NewStorage(app.Browser.StoragePath, app.Browser.MaxAge)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 
 	"github.com/Misha36bm/site-checker/src/internal/browser"
 	"github.com/Misha36bm/site-checker/src/internal/metadata"
@@ -24,10 +25,10 @@ type Screenshotter interface {
 
 // ScreenshotStorage keeps screenshot files. browser.Storage implements it.
 type ScreenshotStorage interface {
-	// Find returns the storage key of a URL's screenshot and whether it exists.
-	Find(pageURL string) (string, bool, error)
-	// Save stores a URL's screenshot and returns its storage key.
-	Save(pageURL string, png []byte) (string, error)
+	// FindReusable returns a URL's unexpired screenshot of an available page.
+	FindReusable(pageURL string) (browser.Stored, bool, error)
+	// Save stores a screenshot taken when the site answered with status.
+	Save(pageURL string, status int, png []byte) (browser.Stored, error)
 }
 
 // Processor runs the stages of a check, persisting each result as soon as the
@@ -80,7 +81,7 @@ func (p *Processor) Process(ctx context.Context, check *models.Check) models.Che
 		}
 	}
 	metadataStatus, found := p.extractMetadata(ctx, lease, out, log)
-	screenshotStatus, capture := p.captureScreenshot(ctx, check, log)
+	screenshotStatus, capture := p.captureScreenshot(ctx, check, *out.Result.StatusCode, log)
 	if capture != nil {
 		metadataStatus = p.fillFromDOM(ctx, lease, metadataStatus, found, capture, log)
 	}
@@ -105,7 +106,7 @@ func (p *Processor) extractMetadata(ctx context.Context, lease models.Lease, out
 	return models.StageSuccess, found
 }
 
-func (p *Processor) captureScreenshot(ctx context.Context, check *models.Check, log *slog.Logger) (string, *browser.Capture) {
+func (p *Processor) captureScreenshot(ctx context.Context, check *models.Check, status int, log *slog.Logger) (string, *browser.Capture) {
 	lease := check.Lease()
 	fail := func(message string) (string, *browser.Capture) {
 		result := models.ScreenshotResult{Status: models.StageFailed, Error: message}
@@ -115,20 +116,24 @@ func (p *Processor) captureScreenshot(ctx context.Context, check *models.Check, 
 		return models.StageFailed, nil
 	}
 
-	// A page already captured is not captured again. Nothing was rendered, so the
-	// browser's final URL and the DOM's metadata stay unknown for this check.
-	key, exists, err := p.files.Find(check.URL)
-	if err != nil {
-		log.Error("look up screenshot", "error", err)
-		return fail("The screenshot could not be stored.")
-	}
-	if exists {
-		result := models.ScreenshotResult{Status: models.StageSuccess, Path: key}
-		if err := p.store.SaveScreenshotResult(ctx, lease, result); err != nil {
-			log.Error("save reused screenshot", "error", err)
-			return models.StageFailed, nil
+	// An available page already captured is not captured again. Nothing is rendered
+	// then, so the browser's final URL and the DOM's metadata stay unknown for this
+	// check. An error page is always captured: a stored screenshot of a working site
+	// would misrepresent it.
+	if status == http.StatusOK {
+		stored, exists, err := p.files.FindReusable(check.URL)
+		if err != nil {
+			log.Error("look up screenshot", "error", err)
+			return fail("The screenshot could not be stored.")
 		}
-		return models.StageSuccess, nil
+		if exists {
+			result := models.ScreenshotResult{Status: models.StageSuccess, Path: stored.Key, CapturedAt: stored.CapturedAt}
+			if err := p.store.SaveScreenshotResult(ctx, lease, result); err != nil {
+				log.Error("save reused screenshot", "error", err)
+				return models.StageFailed, nil
+			}
+			return models.StageSuccess, nil
+		}
 	}
 
 	capture, err := p.browser.Capture(ctx, check.URL)
@@ -136,15 +141,16 @@ func (p *Processor) captureScreenshot(ctx context.Context, check *models.Check, 
 		log.Warn("capture screenshot", "error", err)
 		return fail(screenshotMessage(err))
 	}
-	key, err = p.files.Save(check.URL, capture.PNG)
+	stored, err := p.files.Save(check.URL, status, capture.PNG)
 	if err != nil {
 		log.Error("store screenshot", "error", err)
 		return fail("The screenshot could not be stored.")
 	}
 	result := models.ScreenshotResult{
 		Status:          models.StageSuccess,
-		Path:            key,
+		Path:            stored.Key,
 		BrowserFinalURL: capture.FinalURL,
+		CapturedAt:      stored.CapturedAt,
 	}
 	if err := p.store.SaveScreenshotResult(ctx, lease, result); err != nil {
 		log.Error("save screenshot", "error", err)

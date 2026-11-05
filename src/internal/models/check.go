@@ -60,9 +60,11 @@ type Check struct {
 	Description      *string       `json:"description,omitempty"`
 	ScreenshotStatus string        `json:"screenshot_status"`
 	ScreenshotError  *string       `json:"screenshot_error,omitempty"`
-	CreatedAt        time.Time     `json:"created_at"`
-	StartedAt        *time.Time    `json:"started_at,omitempty"`
-	CompletedAt      *time.Time    `json:"completed_at,omitempty"`
+	// ScreenshotCapturedAt can be earlier than the check: screenshots are reused.
+	ScreenshotCapturedAt *time.Time `json:"screenshot_captured_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	StartedAt            *time.Time `json:"started_at,omitempty"`
+	CompletedAt          *time.Time `json:"completed_at,omitempty"`
 
 	// Internal fields, never returned by the API.
 	ScreenshotPath *string    `json:"-"`
@@ -115,6 +117,7 @@ type ScreenshotResult struct {
 	Path            string // storage key, not a filesystem path
 	Error           string // safe to show clients
 	BrowserFinalURL string
+	CapturedAt      time.Time // zero if there is no screenshot
 }
 
 // CheckOutcome is the final state of a processed check.

@@ -124,7 +124,7 @@ func TestFileNameIsSafe(t *testing.T) {
 	}
 	valid := regexp.MustCompile(`^[A-Za-z0-9_-]{43}\.png$`)
 	for _, raw := range urls {
-		name, err := FileName(raw)
+		name, err := FileName(raw, 200)
 		if err != nil {
 			t.Fatalf("%s: %v", raw, err)
 		}
@@ -140,12 +140,12 @@ func TestEquivalentURLsShareAFile(t *testing.T) {
 		{"http://example.com/a?x=1", "http://example.com:80/a?x=1", "http://EXAMPLE.com/a?x=1#y"},
 	}
 	for _, group := range groups {
-		want, err := FileName(group[0])
+		want, err := FileName(group[0], 200)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, raw := range group[1:] {
-			if got, err := FileName(raw); err != nil || got != want {
+			if got, err := FileName(raw, 200); err != nil || got != want {
 				t.Errorf("%s: got %q (%v), want %q", raw, got, err, want)
 			}
 		}
@@ -172,7 +172,7 @@ func TestDifferentPagesGetDifferentFiles(t *testing.T) {
 	}
 	seen := map[string]string{}
 	for _, raw := range urls {
-		name, err := FileName(raw)
+		name, err := FileName(raw, 200)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,7 +185,7 @@ func TestDifferentPagesGetDifferentFiles(t *testing.T) {
 
 func TestFileNameRejectsUnusableURLs(t *testing.T) {
 	for _, raw := range []string{"http://bad host/", "not a url", ""} {
-		if name, err := FileName(raw); err == nil {
+		if name, err := FileName(raw, 200); err == nil {
 			t.Errorf("%q: got %q, want an error", raw, name)
 		}
 	}
@@ -193,35 +193,38 @@ func TestFileNameRejectsUnusableURLs(t *testing.T) {
 
 func TestStorageSaveAndFind(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "screenshots")
-	storage, err := NewStorage(dir)
+	storage, err := NewStorage(dir, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	const page = "https://example.com/"
-	if key, found, err := storage.Find(page); err != nil || found || key == "" {
-		t.Fatalf("before saving: key = %q, found = %v, err = %v", key, found, err)
+	if _, found, err := storage.FindReusable(page); err != nil || found {
+		t.Fatalf("before saving: found = %v, err = %v", found, err)
 	}
 
-	key, err := storage.Save(page, []byte("first"))
+	saved, err := storage.Save(page, 200, []byte("first"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(key) != key {
-		t.Errorf("key = %q: it must be relative, so no filesystem path reaches the database", key)
+	if filepath.Base(saved.Key) != saved.Key {
+		t.Errorf("key = %q: it must be relative, so no filesystem path reaches the database", saved.Key)
+	}
+	if time.Since(saved.CapturedAt) > time.Minute || saved.CapturedAt.Location() != time.UTC {
+		t.Errorf("captured at = %v", saved.CapturedAt)
 	}
 
-	// An equivalent URL finds the same file.
-	found, ok, err := storage.Find("HTTPS://EXAMPLE.COM")
-	if err != nil || !ok || found != key {
-		t.Fatalf("after saving: key = %q, found = %v, err = %v", found, ok, err)
+	// An equivalent URL finds the same file, with the same capture time.
+	found, ok, err := storage.FindReusable("HTTPS://EXAMPLE.COM")
+	if err != nil || !ok || found != saved {
+		t.Fatalf("after saving: found = %+v, ok = %v, err = %v, want %+v", found, ok, err, saved)
 	}
 
 	// Saving again replaces the file and leaves nothing else behind.
-	if _, err := storage.Save(page, []byte("second")); err != nil {
+	if _, err := storage.Save(page, 200, []byte("second")); err != nil {
 		t.Fatal(err)
 	}
-	content, err := os.ReadFile(filepath.Join(dir, key))
+	content, err := os.ReadFile(filepath.Join(dir, saved.Key))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,15 +240,91 @@ func TestStorageSaveAndFind(t *testing.T) {
 	}
 }
 
-func TestStorageRejectsUnusableURL(t *testing.T) {
-	storage, err := NewStorage(t.TempDir())
+func TestErrorScreenshotsAreKeptApart(t *testing.T) {
+	dir := t.TempDir()
+	storage, err := NewStorage(dir, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := storage.Find("http://bad host/"); err == nil {
-		t.Error("Find: expected an error")
+	const page = "https://example.com/"
+
+	failure, err := storage.Save(page, 500, []byte("error page"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := storage.Save("http://bad host/", []byte("x")); err == nil {
+	if !strings.HasSuffix(failure.Key, "-500.png") {
+		t.Errorf("key = %q", failure.Key)
+	}
+	if _, found, err := storage.FindReusable(page); err != nil || found {
+		t.Errorf("an error page must not be reusable: found = %v, err = %v", found, err)
+	}
+
+	working, err := storage.Save(page, 200, []byte("working page"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.Save(page, 500, []byte("error again")); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, working.Key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "working page" {
+		t.Errorf("an error page replaced the working page: %q", content)
+	}
+}
+
+func TestScreenshotExpiry(t *testing.T) {
+	const page = "https://example.com/"
+	cases := []struct {
+		name   string
+		maxAge time.Duration
+		age    time.Duration
+		found  bool
+	}{
+		{"fresh", time.Hour, time.Minute, true},
+		{"expired", time.Hour, 2 * time.Hour, false},
+		{"zero never expires", 0, 10000 * time.Hour, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			storage, err := NewStorage(dir, tc.maxAge)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved, err := storage.Save(page, 200, []byte("x"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().Add(-tc.age)
+			if err := os.Chtimes(filepath.Join(dir, saved.Key), old, old); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := storage.FindReusable(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found != tc.found {
+				t.Fatalf("found = %v, want %v", found, tc.found)
+			}
+			if found && !got.CapturedAt.Equal(old.Truncate(time.Microsecond)) && got.CapturedAt.Sub(old).Abs() > time.Second {
+				t.Errorf("captured at = %v, want about %v", got.CapturedAt, old)
+			}
+		})
+	}
+}
+
+func TestStorageRejectsUnusableURL(t *testing.T) {
+	storage, err := NewStorage(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := storage.FindReusable("http://bad host/"); err == nil {
+		t.Error("FindReusable: expected an error")
+	}
+	if _, err := storage.Save("http://bad host/", 200, []byte("x")); err == nil {
 		t.Error("Save: expected an error")
 	}
 }
@@ -257,7 +336,7 @@ func TestNewStorageRemovesLeftoverTemporaryFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := NewStorage(dir); err != nil {
+	if _, err := NewStorage(dir, 0); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)

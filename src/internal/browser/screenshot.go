@@ -6,22 +6,34 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const tempPattern = ".tmp-*"
 
-// Storage keeps screenshots on disk, one file per normalized URL.
+// Stored describes a screenshot file.
+type Stored struct {
+	Key        string
+	CapturedAt time.Time
+}
+
+// Storage keeps screenshots on disk: one reusable file per normalized URL for
+// available pages, and one per URL and status for error pages.
 type Storage struct {
-	dir string
+	dir    string
+	maxAge time.Duration
 }
 
 // NewStorage returns a Storage for dir, creating it if needed. Temporary files
-// left by a crash are removed.
-func NewStorage(dir string) (*Storage, error) {
+// left by a crash are removed. A screenshot older than maxAge is no longer reused;
+// zero means it never expires.
+func NewStorage(dir string, maxAge time.Duration) (*Storage, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create screenshot directory: %w", err)
 	}
@@ -34,63 +46,78 @@ func NewStorage(dir string) (*Storage, error) {
 			return nil, fmt.Errorf("remove temporary file: %w", err)
 		}
 	}
-	return &Storage{dir: dir}, nil
+	return &Storage{dir: dir, maxAge: maxAge}, nil
 }
 
-// Find returns the storage key of pageURL's screenshot and whether it exists.
-func (s *Storage) Find(pageURL string) (string, bool, error) {
-	key, err := FileName(pageURL)
+// FindReusable returns pageURL's screenshot of an available page, if one exists and
+// has not expired. Only such screenshots are reusable: a temporary error must not
+// stand in for the site from then on.
+func (s *Storage) FindReusable(pageURL string) (Stored, bool, error) {
+	key, err := FileName(pageURL, http.StatusOK)
 	if err != nil {
-		return "", false, err
+		return Stored{}, false, err
 	}
-	_, err = os.Stat(filepath.Join(s.dir, key))
-	switch {
-	case err == nil:
-		return key, true, nil
-	case errors.Is(err, fs.ErrNotExist):
-		return key, false, nil
+	info, err := os.Stat(filepath.Join(s.dir, key))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Stored{}, false, nil
 	}
-	return "", false, err
+	if err != nil {
+		return Stored{}, false, err
+	}
+	if s.maxAge > 0 && time.Since(info.ModTime()) >= s.maxAge {
+		return Stored{}, false, nil
+	}
+	return Stored{Key: key, CapturedAt: info.ModTime().UTC()}, true, nil
 }
 
-// Save stores pageURL's screenshot and returns its storage key. The file appears
-// under its final name only once complete, so a crash cannot leave half a PNG. If
-// two checks of one URL capture at once, the last one replaces the other's file.
-func (s *Storage) Save(pageURL string, png []byte) (string, error) {
-	key, err := FileName(pageURL)
+// Save stores a screenshot of pageURL taken when the site answered with status. The
+// file appears under its final name only once complete, so a crash cannot leave
+// half a PNG, and it replaces any earlier file of that name.
+func (s *Storage) Save(pageURL string, status int, png []byte) (Stored, error) {
+	key, err := FileName(pageURL, status)
 	if err != nil {
-		return "", err
+		return Stored{}, err
 	}
 	temp, err := os.CreateTemp(s.dir, tempPattern)
 	if err != nil {
-		return "", err
+		return Stored{}, err
 	}
 	defer os.Remove(temp.Name()) // fails harmlessly after the rename
 
 	if _, err := temp.Write(png); err != nil {
 		temp.Close()
-		return "", err
+		return Stored{}, err
 	}
 	if err := temp.Close(); err != nil {
-		return "", err
+		return Stored{}, err
 	}
 	if err := os.Chmod(temp.Name(), 0o640); err != nil {
-		return "", err
+		return Stored{}, err
 	}
-	if err := os.Rename(temp.Name(), filepath.Join(s.dir, key)); err != nil {
-		return "", err
+	path := filepath.Join(s.dir, key)
+	if err := os.Rename(temp.Name(), path); err != nil {
+		return Stored{}, err
 	}
-	return key, nil
+	info, err := os.Stat(path)
+	if err != nil {
+		return Stored{}, err
+	}
+	return Stored{Key: key, CapturedAt: info.ModTime().UTC()}, nil
 }
 
 // FileName returns the name of a URL's screenshot file: the hash of its normalized
-// form. Equivalent URLs share a name, and different ones get different names.
-func FileName(pageURL string) (string, error) {
+// form, so equivalent URLs share a name and different ones do not. Any status but
+// 200 is added to the name, which keeps error pages away from the reusable file.
+func FileName(pageURL string, status int) (string, error) {
 	u, err := normalize(pageURL)
 	if err != nil {
 		return "", err
 	}
-	return Hash(u.String()) + ".png", nil
+	name := Hash(u.String())
+	if status != http.StatusOK {
+		name += "-" + strconv.Itoa(status)
+	}
+	return name + ".png", nil
 }
 
 // Hash returns the SHA-256 of value in unpadded base64url: always 43 characters,
