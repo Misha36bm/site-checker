@@ -101,8 +101,8 @@ func TestPostgresMigrations(t *testing.T) {
 	if err := raw.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 2 {
-		t.Errorf("schema_migrations has %d rows, want 2", versions)
+	if versions != 3 {
+		t.Errorf("schema_migrations has %d rows, want 3", versions)
 	}
 }
 

@@ -129,6 +129,7 @@ func run(ctx context.Context, get config.Getter) error {
 		Addr: app.Addr(),
 		Handler: routes.New(routes.Deps{
 			DB:           db,
+			Browser:      chromium,
 			Checks:       service,
 			MaxBodyBytes: app.MaxBodyBytes,
 		}),

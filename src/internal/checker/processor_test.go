@@ -6,20 +6,35 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Misha36bm/site-checker/src/internal/browser"
+	"github.com/Misha36bm/site-checker/src/internal/database"
 	"github.com/Misha36bm/site-checker/src/internal/models"
 )
 
 type fakeResults struct {
+	captured      *models.Check
+	capturedErr   error
 	http          *models.HTTPResult
 	metadata      []models.MetadataResult
 	screenshot    *models.ScreenshotResult
 	httpErr       error
 	metadataErr   error
 	screenshotErr error
+}
+
+func (f *fakeResults) FindCapturedCheck(context.Context, string) (*models.Check, error) {
+	if f.capturedErr != nil {
+		return nil, f.capturedErr
+	}
+	if f.captured == nil {
+		return nil, database.ErrNotFound
+	}
+	return f.captured, nil
 }
 
 func (f *fakeResults) SaveHTTPResult(_ context.Context, _ models.Lease, r models.HTTPResult) error {
@@ -204,6 +219,195 @@ func TestErrorPagesAreNeverReused(t *testing.T) {
 	}
 	if !strings.HasSuffix(broken.screenshot.Path, "-500.png") {
 		t.Errorf("path = %q", broken.screenshot.Path)
+	}
+}
+
+func text(value string) *string { return &value }
+
+func TestReusedScreenshotInheritsWhatTheBrowserSaw(t *testing.T) {
+	previous := &models.Check{
+		BrowserFinalURL: text("https://final.example/"),
+		Title:           text("Rendered title"),
+		Description:     text("Rendered description"),
+	}
+	cases := []struct {
+		name      string
+		html      string
+		wantTitle string
+		wantDesc  string
+		wantSaves int
+	}{
+		{"client-rendered page", `<div id=app></div>`, "Rendered title", "Rendered description", 2},
+		{"html takes priority", `<title>From HTML</title>`, "From HTML", "Rendered description", 2},
+		{"nothing to add", `<title>A</title><meta name=description content=B>`, "A", "B", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := htmlSite(t, 200, tc.html)
+			store, b := &fakeResults{captured: previous}, working()
+			outcome := process(store, b, &fakeFiles{existing: true}, s.at("a.test", "/"))
+
+			if b.calls != 0 || outcome.ScreenshotStatus != models.StageSuccess || outcome.MetadataStatus != models.StageSuccess {
+				t.Errorf("browser calls = %d, outcome = %+v", b.calls, outcome)
+			}
+			if store.screenshot.BrowserFinalURL != "https://final.example/" {
+				t.Errorf("screenshot = %+v", store.screenshot)
+			}
+			if len(store.metadata) != tc.wantSaves {
+				t.Fatalf("saved %d times, want %d", len(store.metadata), tc.wantSaves)
+			}
+			last := store.metadata[len(store.metadata)-1]
+			if last.Title != tc.wantTitle || last.Description != tc.wantDesc {
+				t.Errorf("metadata = %+v", last)
+			}
+		})
+	}
+}
+
+func TestReusedScreenshotWorksWithoutTheCapturingCheck(t *testing.T) {
+	for name, store := range map[string]*fakeResults{
+		"check is gone":     {},
+		"database failure":  {capturedErr: errors.New("connection lost")},
+		"nothing was found": {captured: &models.Check{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := htmlSite(t, 200, `<title>T</title>`)
+			outcome := process(store, working(), &fakeFiles{existing: true}, s.at("a.test", "/"))
+			if outcome.Status != models.StatusCompleted || outcome.ScreenshotStatus != models.StageSuccess {
+				t.Errorf("outcome = %+v", outcome)
+			}
+			if store.screenshot.Path != "site.png" || store.screenshot.BrowserFinalURL != "" {
+				t.Errorf("screenshot = %+v", store.screenshot)
+			}
+		})
+	}
+}
+
+// slowBrowser counts captures and holds each long enough for others to pile up.
+type slowBrowser struct {
+	calls atomic.Int32
+}
+
+func (b *slowBrowser) Capture(context.Context, string) (*browser.Capture, error) {
+	b.calls.Add(1)
+	time.Sleep(50 * time.Millisecond)
+	return &browser.Capture{PNG: []byte("png"), FinalURL: "https://final.example/"}, nil
+}
+
+// lockedResults lets several checks share a store.
+type lockedResults struct {
+	mu sync.Mutex
+	fakeResults
+}
+
+func (l *lockedResults) SaveHTTPResult(ctx context.Context, lease models.Lease, r models.HTTPResult) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeResults.SaveHTTPResult(ctx, lease, r)
+}
+
+func (l *lockedResults) SaveMetadataResult(ctx context.Context, lease models.Lease, r models.MetadataResult) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeResults.SaveMetadataResult(ctx, lease, r)
+}
+
+func (l *lockedResults) SaveScreenshotResult(ctx context.Context, lease models.Lease, r models.ScreenshotResult) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeResults.SaveScreenshotResult(ctx, lease, r)
+}
+
+func (l *lockedResults) FindCapturedCheck(ctx context.Context, path string) (*models.Check, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeResults.FindCapturedCheck(ctx, path)
+}
+
+func runConcurrently(t *testing.T, urls []string) (*slowBrowser, []models.CheckOutcome) {
+	t.Helper()
+	files, err := browser.NewStorage(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &slowBrowser{}
+	processor := NewProcessor(&lockedResults{}, newChecker(10), b, files)
+
+	outcomes := make([]models.CheckOutcome, len(urls))
+	var wg sync.WaitGroup
+	for i, url := range urls {
+		wg.Go(func() {
+			outcomes[i] = processor.Process(context.Background(), &models.Check{ID: int64(i + 1), URL: url, Attempts: 1})
+		})
+	}
+	wg.Wait()
+	return b, outcomes
+}
+
+func TestConcurrentChecksOfOnePageCaptureOnce(t *testing.T) {
+	s := htmlSite(t, 200, `<title>T</title>`)
+	urls := []string{
+		s.at("a.test", "/"),
+		s.at("a.test", "/"),
+		s.at("A.TEST", "/"), // an equivalent URL shares the lock too
+		s.at("a.test", "/#top"),
+		s.at("a.test", "/"),
+	}
+	b, outcomes := runConcurrently(t, urls)
+
+	if got := b.calls.Load(); got != 1 {
+		t.Errorf("Chromium ran %d times for one page", got)
+	}
+	for i, outcome := range outcomes {
+		if outcome.Status != models.StatusCompleted || outcome.ScreenshotStatus != models.StageSuccess {
+			t.Errorf("check %d: outcome = %+v", i, outcome)
+		}
+	}
+}
+
+func TestConcurrentChecksOfDifferentPagesEachCapture(t *testing.T) {
+	s := htmlSite(t, 200, `<title>T</title>`)
+	b, _ := runConcurrently(t, []string{s.at("a.test", "/1"), s.at("a.test", "/2"), s.at("b.test", "/1")})
+	if got := b.calls.Load(); got != 3 {
+		t.Errorf("Chromium ran %d times for 3 pages", got)
+	}
+}
+
+func TestFailedCaptureLetsTheNextCheckTry(t *testing.T) {
+	s := htmlSite(t, 200, `<title>T</title>`)
+	files, err := browser.NewStorage(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := &fakeBrowser{err: errors.New("crashed")}
+	if outcome := process(&fakeResults{}, broken, files, s.at("a.test", "/")); outcome.ScreenshotStatus != models.StageFailed {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	fixed := working()
+	if outcome := process(&fakeResults{}, fixed, files, s.at("a.test", "/")); outcome.ScreenshotStatus != models.StageSuccess || fixed.calls != 1 {
+		t.Errorf("outcome = %+v, browser calls = %d", outcome, fixed.calls)
+	}
+}
+
+func TestCancelledWaitDoesNotCapture(t *testing.T) {
+	s := htmlSite(t, 200, `<title>T</title>`)
+	key, err := browser.FileName(s.at("a.test", "/"), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, b := &fakeResults{}, working()
+	processor := NewProcessor(store, newChecker(10), b, &fakeFiles{})
+	unlock, err := processor.captures.Lock(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	processor.Process(ctx, &models.Check{ID: 1, URL: s.at("a.test", "/"), Attempts: 1})
+	if b.calls != 0 {
+		t.Errorf("browser ran %d times after the wait was cancelled", b.calls)
 	}
 }
 

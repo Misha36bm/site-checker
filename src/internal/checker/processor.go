@@ -7,12 +7,14 @@ import (
 	"net/http"
 
 	"github.com/Misha36bm/site-checker/src/internal/browser"
+	"github.com/Misha36bm/site-checker/src/internal/database"
 	"github.com/Misha36bm/site-checker/src/internal/metadata"
 	"github.com/Misha36bm/site-checker/src/internal/models"
 )
 
 // ResultStore persists stage results.
 type ResultStore interface {
+	FindCapturedCheck(ctx context.Context, path string) (*models.Check, error)
 	SaveHTTPResult(ctx context.Context, lease models.Lease, result models.HTTPResult) error
 	SaveMetadataResult(ctx context.Context, lease models.Lease, result models.MetadataResult) error
 	SaveScreenshotResult(ctx context.Context, lease models.Lease, result models.ScreenshotResult) error
@@ -34,15 +36,16 @@ type ScreenshotStorage interface {
 // Processor runs the stages of a check, persisting each result as soon as the
 // stage ends so that a later failure cannot lose it.
 type Processor struct {
-	store   ResultStore
-	http    *HTTPChecker
-	browser Screenshotter
-	files   ScreenshotStorage
+	store    ResultStore
+	http     *HTTPChecker
+	browser  Screenshotter
+	files    ScreenshotStorage
+	captures *keyLocks
 }
 
 // NewProcessor returns a Processor.
 func NewProcessor(store ResultStore, http *HTTPChecker, browser Screenshotter, files ScreenshotStorage) *Processor {
-	return &Processor{store: store, http: http, browser: browser, files: files}
+	return &Processor{store: store, http: http, browser: browser, files: files, captures: newKeyLocks()}
 }
 
 // Process implements worker.Processor.
@@ -116,23 +119,28 @@ func (p *Processor) captureScreenshot(ctx context.Context, check *models.Check, 
 		return models.StageFailed, nil
 	}
 
-	// An available page already captured is not captured again. Nothing is rendered
-	// then, so the browser's final URL and the DOM's metadata stay unknown for this
-	// check. An error page is always captured: a stored screenshot of a working site
-	// would misrepresent it.
+	// An available page already captured is not captured again. An error page always
+	// is: a stored screenshot of a working site would misrepresent it. The lock makes
+	// concurrent checks of one page wait here and reuse the first one's screenshot.
 	if status == http.StatusOK {
+		key, err := browser.FileName(check.URL, status)
+		if err != nil {
+			log.Error("name screenshot", "error", err)
+			return fail("The screenshot could not be stored.")
+		}
+		unlock, err := p.captures.Lock(ctx, key)
+		if err != nil {
+			return fail("The page could not be rendered.")
+		}
+		defer unlock()
+
 		stored, exists, err := p.files.FindReusable(check.URL)
 		if err != nil {
 			log.Error("look up screenshot", "error", err)
 			return fail("The screenshot could not be stored.")
 		}
 		if exists {
-			result := models.ScreenshotResult{Status: models.StageSuccess, Path: stored.Key, CapturedAt: stored.CapturedAt}
-			if err := p.store.SaveScreenshotResult(ctx, lease, result); err != nil {
-				log.Error("save reused screenshot", "error", err)
-				return models.StageFailed, nil
-			}
-			return models.StageSuccess, nil
+			return p.reuseScreenshot(ctx, lease, stored, log)
 		}
 	}
 
@@ -159,8 +167,39 @@ func (p *Processor) captureScreenshot(ctx context.Context, check *models.Check, 
 	return models.StageSuccess, capture
 }
 
+// reuseScreenshot records a stored screenshot for this check. Nothing is rendered, so
+// what the browser saw comes from the check that took the screenshot, if it is still
+// there. Without it, the screenshot is still valid and those details stay empty.
+func (p *Processor) reuseScreenshot(ctx context.Context, lease models.Lease, stored browser.Stored, log *slog.Logger) (string, *browser.Capture) {
+	result := models.ScreenshotResult{Status: models.StageSuccess, Path: stored.Key, CapturedAt: stored.CapturedAt}
+
+	var rendered *browser.Capture
+	captured, err := p.store.FindCapturedCheck(ctx, stored.Key)
+	switch {
+	case err == nil:
+		result.BrowserFinalURL = deref(captured.BrowserFinalURL)
+		rendered = &browser.Capture{Title: deref(captured.Title), Description: deref(captured.Description)}
+	case !errors.Is(err, database.ErrNotFound):
+		log.Warn("find check that captured screenshot", "error", err)
+	}
+
+	if err := p.store.SaveScreenshotResult(ctx, lease, result); err != nil {
+		log.Error("save reused screenshot", "error", err)
+		return models.StageFailed, rendered
+	}
+	return models.StageSuccess, rendered
+}
+
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 // fillFromDOM covers pages that set their title or description with JavaScript,
-// which the raw HTML does not show. What the HTML did provide takes priority.
+// which the raw HTML does not show. capture is this check's render or, for a reused
+// screenshot, the one that took it. What the HTML did provide takes priority.
 func (p *Processor) fillFromDOM(ctx context.Context, lease models.Lease, status string, found metadata.Metadata, capture *browser.Capture, log *slog.Logger) string {
 	merged := found
 	if merged.Title == "" {

@@ -60,6 +60,10 @@ type CheckRepository interface {
 	// SaveScreenshotResult stores the screenshot stage's result. It returns
 	// ErrLeaseLost if the claim is gone.
 	SaveScreenshotResult(ctx context.Context, lease models.Lease, result models.ScreenshotResult) error
+	// FindCapturedCheck returns the latest check holding what the browser saw for the
+	// screenshot at path, or ErrNotFound. That is the check that rendered it, or one
+	// that already inherited from it. Checks reusing a screenshot read from it.
+	FindCapturedCheck(ctx context.Context, path string) (*models.Check, error)
 	// CompleteCheck stores the final state. It returns ErrLeaseLost if the claim
 	// is gone.
 	CompleteCheck(ctx context.Context, lease models.Lease, outcome models.CheckOutcome) error

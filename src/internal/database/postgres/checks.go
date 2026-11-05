@@ -177,6 +177,20 @@ func (d *DB) SaveScreenshotResult(ctx context.Context, lease models.Lease, r mod
 	return leaseResult(result, err)
 }
 
+// FindCapturedCheck returns the latest check that rendered the screenshot at path.
+func (d *DB) FindCapturedCheck(ctx context.Context, path string) (*models.Check, error) {
+	row := d.sql.QueryRowContext(ctx, `
+		SELECT `+checkColumns+` FROM checks
+		WHERE screenshot_path = $1 AND browser_final_url IS NOT NULL
+		ORDER BY screenshot_captured_at DESC, id DESC
+		LIMIT 1`, path)
+	c, err := scanCheck(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, database.ErrNotFound
+	}
+	return c, err
+}
+
 // CompleteCheck stores the final state.
 func (d *DB) CompleteCheck(ctx context.Context, lease models.Lease, outcome models.CheckOutcome) error {
 	result, err := d.sql.ExecContext(ctx, `

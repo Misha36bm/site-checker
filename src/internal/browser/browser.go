@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +69,30 @@ type Browser struct {
 // New returns a Browser. It does not connect until the first capture.
 func New(cfg Config, resolver Resolver) *Browser {
 	return &Browser{cfg: cfg, resolver: resolver, slots: make(chan struct{}, cfg.Concurrency)}
+}
+
+// Ping verifies Chromium answers over CDP. It uses its own transport, because a proxy
+// from the environment must not stand between the API and Chromium.
+func (b *Browser) Ping(ctx context.Context) error {
+	endpoint, err := b.endpoint(ctx)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(endpoint, "/")+"/json/version", nil)
+	if err != nil {
+		return err
+	}
+	transport := &http.Transport{DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // Capture navigates to pageURL and screenshots the viewport. Waiting for a free

@@ -54,7 +54,7 @@ A screenshot failure must not invalidate a successful HTTP availability check.
 - **HTTP check:** uses GET and verifies TLS certificates. A certificate error ends the check with `tls_error`.
 - **Metadata:** extracted from the raw HTML of the final response, for HTML responses only. Title and description are decoded to UTF-8 using the declared charset. If either value is empty and the screenshot stage rendered the page, it is filled from the rendered DOM, so client-rendered pages are covered.
 - **Screenshot:** captured for any final HTML response, including 404 and 500, because an error page is useful evidence. Skipped when no final response was received or the response is not HTML. Captures the viewport only, after the `load` event plus `BROWSER_SETTLE_DELAY`, all within `BROWSER_TIMEOUT`.
-- **Screenshot reuse:** a check of an available page (HTTP 200) reuses an existing screenshot of that URL if it is younger than `SCREENSHOT_MAX_AGE`, and Chromium does not run. `browser_final_url` and DOM metadata then stay empty for that check, and `screenshot_captured_at` shows the age of what it references. The HTTP and metadata stages always run. Any other status is always captured and stored separately, so a temporary error never replaces or stands in for the working page.
+- **Screenshot reuse:** a check of an available page (HTTP 200) reuses an existing screenshot of that URL if it is younger than `SCREENSHOT_MAX_AGE`, and Chromium does not run. `browser_final_url` and any title or description missing from the raw HTML then come from the latest check that rendered that file, and `screenshot_captured_at` shows their age. Concurrent checks of one page wait for the first capture and reuse it; this is per process, so several API instances could still capture twice, which is harmless. The HTTP and metadata stages always run. Any other status is always captured and stored separately, so a temporary error never replaces or stands in for the working page.
 - **Screenshot file names:** the unpadded base64url SHA-256 of the normalized URL, such as `DxFdsGK3wN0DCxaHjJnepcNUtJ3DezjriEYXnHeD6dc.png`, with the status added for anything but 200, such as `DxFdsGK3wN0DCxaHjJnepcNUtJ3DezjriEYXnHeD6dc-500.png`. Normalization only changes what cannot alter the server's response: scheme and host case, a host's trailing dot, default ports, an empty path, and the fragment.
 - The result of each stage is persisted as soon as the stage ends, so a browser crash cannot lose the HTTP result.
 
@@ -491,7 +491,7 @@ Return the stored PNG screenshot.
 
 `GET /health`
 
-Return application health and database connectivity status.
+Return application health, database connectivity, and browser connectivity. An unreachable database returns `503`. An unreachable browser returns `200` with status `degraded`, because checks still run and only screenshots fail.
 
 ## 8. Database Model
 

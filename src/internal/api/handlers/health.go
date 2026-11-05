@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -18,21 +19,38 @@ type Pinger interface {
 type healthResponse struct {
 	Status   string `json:"status"`
 	Database string `json:"database"`
+	Browser  string `json:"browser"`
 }
 
-// Health reports application health and database connectivity. It responds 503
-// if the database is unreachable. The cause is logged, not returned, because it
-// can reveal internal addresses.
-func Health(db Pinger) http.HandlerFunc {
+// Health reports application health and the state of its dependencies. An
+// unreachable database means 503, because nothing works without it. An unreachable
+// browser means status "degraded" with 200: checks still run and only screenshots
+// fail, so nothing should treat the API as down. Causes are logged, not returned,
+// because they can reveal internal addresses.
+func Health(db, browser Pinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), healthPingTimeout)
 		defer cancel()
 
-		if err := db.Ping(ctx); err != nil {
-			slog.Error("health check: database unreachable", "error", err)
-			WriteJSON(w, http.StatusServiceUnavailable, healthResponse{Status: "unavailable", Database: "unreachable"})
-			return
+		// At the same time, so that two slow dependencies stay within the timeout of
+		// whoever is asking.
+		var dbErr, browserErr error
+		var wg sync.WaitGroup
+		wg.Go(func() { dbErr = db.Ping(ctx) })
+		wg.Go(func() { browserErr = browser.Ping(ctx) })
+		wg.Wait()
+
+		body := healthResponse{Status: "ok", Database: "ok", Browser: "ok"}
+		code := http.StatusOK
+		if browserErr != nil {
+			slog.Warn("health check: browser unreachable", "error", browserErr)
+			body.Status, body.Browser = "degraded", "unreachable"
 		}
-		WriteJSON(w, http.StatusOK, healthResponse{Status: "ok", Database: "ok"})
+		if dbErr != nil {
+			slog.Error("health check: database unreachable", "error", dbErr)
+			body.Status, body.Database = "unavailable", "unreachable"
+			code = http.StatusServiceUnavailable
+		}
+		WriteJSON(w, code, body)
 	}
 }

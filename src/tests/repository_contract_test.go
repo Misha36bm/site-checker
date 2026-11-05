@@ -283,6 +283,55 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		}
 	})
 
+	t.Run("find the check that captured a screenshot", func(t *testing.T) {
+		db := open(t)
+		if _, err := db.FindCapturedCheck(ctx, "none.png"); !errors.Is(err, database.ErrNotFound) {
+			t.Fatalf("err = %v", err)
+		}
+
+		finish := func(result models.ScreenshotResult) *models.Check {
+			t.Helper()
+			create(t, db, "https://example.com")
+			check := claim(t, db, longTTL)
+			if err := db.SaveMetadataResult(ctx, check.Lease(), models.MetadataResult{Title: "Title"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SaveScreenshotResult(ctx, check.Lease(), result); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CompleteCheck(ctx, check.Lease(), finished); err != nil {
+				t.Fatal(err)
+			}
+			return check
+		}
+		earlier := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		later := earlier.Add(time.Hour)
+
+		// Rendered, and then a check that only reused the file.
+		first := finish(models.ScreenshotResult{Status: models.StageSuccess, Path: "a.png", BrowserFinalURL: "https://first.example/", CapturedAt: earlier})
+		finish(models.ScreenshotResult{Status: models.StageSuccess, Path: "a.png", CapturedAt: earlier})
+		// Another file must not match.
+		finish(models.ScreenshotResult{Status: models.StageSuccess, Path: "b.png", BrowserFinalURL: "https://other.example/", CapturedAt: later})
+
+		got, err := db.FindCapturedCheck(ctx, "a.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != first.ID || got.BrowserFinalURL == nil || *got.BrowserFinalURL != "https://first.example/" || got.Title == nil || *got.Title != "Title" {
+			t.Errorf("got = %+v", got)
+		}
+
+		// The file was captured again: the newer render wins.
+		newer := finish(models.ScreenshotResult{Status: models.StageSuccess, Path: "a.png", BrowserFinalURL: "https://newer.example/", CapturedAt: later})
+		got, err = db.FindCapturedCheck(ctx, "a.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != newer.ID {
+			t.Errorf("got check %d, want the newest render %d", got.ID, newer.ID)
+		}
+	})
+
 	t.Run("failed request stores empty results", func(t *testing.T) {
 		db := open(t)
 		check := create(t, db, "https://example.com")

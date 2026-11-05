@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -75,6 +77,35 @@ func TestEndpoint(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPing(t *testing.T) {
+	var path string
+	var status int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.WriteHeader(status)
+	}))
+	defer server.Close()
+
+	b := New(Config{CDPURL: server.URL, Concurrency: 1}, fakeResolver{})
+	status = http.StatusOK
+	if err := b.Ping(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/json/version" {
+		t.Errorf("path = %q", path)
+	}
+
+	status = http.StatusInternalServerError
+	if err := b.Ping(context.Background()); err == nil {
+		t.Error("expected an error for a bad status")
+	}
+
+	server.Close()
+	if err := b.Ping(context.Background()); err == nil {
+		t.Error("expected an error for a stopped browser")
 	}
 }
 

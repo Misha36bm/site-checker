@@ -11,6 +11,7 @@ import (
 // Deps holds what the handlers need.
 type Deps struct {
 	DB           handlers.Pinger
+	Browser      handlers.Pinger
 	Checks       handlers.CheckService
 	MaxBodyBytes int64
 }
@@ -20,7 +21,7 @@ func New(deps Deps) http.Handler {
 	checks := handlers.Checks{Service: deps.Checks, MaxBodyBytes: deps.MaxBodyBytes}
 
 	mux := http.NewServeMux()
-	mux.Handle("GET /health", handlers.Health(deps.DB))
+	mux.Handle("GET /health", handlers.Health(deps.DB, deps.Browser))
 	mux.HandleFunc("POST /api/v1/checks", checks.Create)
 	mux.HandleFunc("GET /api/v1/checks/{id}", checks.Get)
 

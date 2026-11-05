@@ -42,6 +42,9 @@ func serve(deps Deps, method, target, body string) *httptest.ResponseRecorder {
 	if deps.DB == nil {
 		deps.DB = fakePinger{}
 	}
+	if deps.Browser == nil {
+		deps.Browser = fakePinger{}
+	}
 	if deps.Checks == nil {
 		deps.Checks = fakeChecks{}
 	}
@@ -68,19 +71,24 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 }
 
 func TestHealth(t *testing.T) {
+	internal := errors.New("dial tcp 10.1.2.3:5432: refused")
 	cases := []struct {
-		name     string
-		pingErr  error
-		code     int
-		status   string
-		database string
+		name       string
+		dbErr      error
+		browserErr error
+		code       int
+		status     string
+		database   string
+		browser    string
 	}{
-		{"database reachable", nil, http.StatusOK, "ok", "ok"},
-		{"database down", errors.New("dial tcp 10.1.2.3:5432: refused"), http.StatusServiceUnavailable, "unavailable", "unreachable"},
+		{"all reachable", nil, nil, 200, "ok", "ok", "ok"},
+		{"browser down keeps the API up", nil, internal, 200, "degraded", "ok", "unreachable"},
+		{"database down", internal, nil, 503, "unavailable", "unreachable", "ok"},
+		{"both down", internal, internal, 503, "unavailable", "unreachable", "unreachable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := serve(Deps{DB: fakePinger{tc.pingErr}}, http.MethodGet, "/health", "")
+			rec := serve(Deps{DB: fakePinger{tc.dbErr}, Browser: fakePinger{tc.browserErr}}, http.MethodGet, "/health", "")
 
 			if rec.Code != tc.code {
 				t.Errorf("code = %d, want %d", rec.Code, tc.code)
@@ -91,11 +99,11 @@ func TestHealth(t *testing.T) {
 			if strings.Contains(rec.Body.String(), "10.1.2.3") {
 				t.Errorf("response exposes an internal address: %s", rec.Body)
 			}
-			var body struct{ Status, Database string }
+			var body struct{ Status, Database, Browser string }
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatal(err)
 			}
-			if body.Status != tc.status || body.Database != tc.database {
+			if body.Status != tc.status || body.Database != tc.database || body.Browser != tc.browser {
 				t.Errorf("body = %+v", body)
 			}
 		})
