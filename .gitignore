@@ -1,0 +1,16 @@
+# Local configuration with credentials
+.env
+!.env.example
+
+# Build and test output
+*.test
+*.out
+/src/server
+
+# Persistent application data
+/storage/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/

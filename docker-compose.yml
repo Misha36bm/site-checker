@@ -1,0 +1,51 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${API_PUBLISH_HOST:-127.0.0.1}:${API_PUBLISH_PORT:-8080}:${APP_PORT:-8080}"
+    networks:
+      - backend
+      - egress
+    depends_on:
+      # Not required, so the API can also run against an external database.
+      postgres:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$${APP_PORT:-8080}/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  postgres:
+    image: postgres:17-alpine
+    profiles: [postgres]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:-site_checker}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-site_checker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  # Database access. No route outside Docker.
+  backend:
+    internal: true
+  # Outbound checks and the published API port.
+  egress:
+
+volumes:
+  postgres_data:
