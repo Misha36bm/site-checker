@@ -34,19 +34,20 @@ type Limits struct {
 // Service creates and retrieves checks.
 type Service struct {
 	store  Store
+	policy *netguard.Policy
 	limits Limits
 }
 
 // NewService returns a Service.
-func NewService(store Store, limits Limits) *Service {
-	return &Service{store: store, limits: limits}
+func NewService(store Store, policy *netguard.Policy, limits Limits) *Service {
+	return &Service{store: store, policy: policy, limits: limits}
 }
 
 // Create validates url and queues a check. It returns a netguard.InvalidURLError
 // for a rejected URL and ErrQueueFull if the queue is at its limit. The limit is
 // approximate: concurrent requests can pass it slightly, which is harmless.
 func (s *Service) Create(ctx context.Context, url string) (*models.Check, error) {
-	if err := netguard.ValidateURL(url, s.limits.MaxURLLength); err != nil {
+	if err := s.policy.ValidateURL(url, s.limits.MaxURLLength); err != nil {
 		return nil, err
 	}
 	pending, err := s.store.CountPendingChecks(ctx)

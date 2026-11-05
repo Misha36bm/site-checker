@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +26,16 @@ type App struct {
 	MaxURLLength     int
 	MaxPendingChecks int
 	Worker           Worker
+	HTTP             HTTP
+	AllowedCIDRs     []netip.Prefix
+}
+
+// HTTP holds the settings of the HTTP checker.
+type HTTP struct {
+	Timeout      time.Duration
+	MaxRedirects int
+	MaxBodyBytes int64
+	UserAgent    string
 }
 
 // Worker holds the settings of the background worker pool.
@@ -69,6 +81,14 @@ func Load(get Getter) (App, error) {
 	if err != nil {
 		return App{}, err
 	}
+	httpConfig, err := loadHTTP(get)
+	if err != nil {
+		return App{}, err
+	}
+	allowed, err := prefixes(get, "SSRF_ALLOWED_CIDRS")
+	if err != nil {
+		return App{}, err
+	}
 	return App{
 		Env:              String(get, "APP_ENV", "development"),
 		Host:             String(get, "APP_HOST", "0.0.0.0"),
@@ -78,7 +98,50 @@ func Load(get Getter) (App, error) {
 		MaxURLLength:     maxURL,
 		MaxPendingChecks: maxPending,
 		Worker:           worker,
+		HTTP:             httpConfig,
+		AllowedCIDRs:     allowed,
 	}, nil
+}
+
+func loadHTTP(get Getter) (HTTP, error) {
+	timeout, err := Duration(get, "HTTP_TIMEOUT", 15*time.Second)
+	if err != nil {
+		return HTTP{}, err
+	}
+	if timeout == 0 {
+		return HTTP{}, errors.New("HTTP_TIMEOUT must be above zero")
+	}
+	maxRedirects, err := Int(get, "HTTP_MAX_REDIRECTS", 10, 0)
+	if err != nil {
+		return HTTP{}, err
+	}
+	maxBody, err := Int(get, "HTTP_MAX_BODY_BYTES", 5<<20, 1)
+	if err != nil {
+		return HTTP{}, err
+	}
+	return HTTP{
+		Timeout:      timeout,
+		MaxRedirects: maxRedirects,
+		MaxBodyBytes: int64(maxBody),
+		UserAgent:    String(get, "HTTP_USER_AGENT", "site-checker/1.0"),
+	}, nil
+}
+
+// prefixes reads a comma-separated list of CIDR ranges.
+func prefixes(get Getter, key string) ([]netip.Prefix, error) {
+	value := get(key)
+	if value == "" {
+		return nil, nil
+	}
+	var result []netip.Prefix
+	for part := range strings.SplitSeq(value, ",") {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(part))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q is not a CIDR range", key, part)
+		}
+		result = append(result, prefix.Masked())
+	}
+	return result, nil
 }
 
 func loadWorker(get Getter) (Worker, error) {

@@ -21,6 +21,14 @@ const (
 
 // Error codes stored with a check.
 const (
+	ErrorSSRFBlocked     = "ssrf_blocked"
+	ErrorInvalidRedirect = "invalid_redirect"
+	ErrorDNS             = "dns_error"
+	ErrorConnection      = "connection_error"
+	ErrorTLS             = "tls_error"
+	ErrorTimeout         = "timeout"
+	ErrorRedirectLimit   = "redirect_limit"
+	ErrorRedirectLoop    = "redirect_loop"
 	ErrorWorkerAbandoned = "worker_abandoned"
 	ErrorInternal        = "internal_error"
 )
@@ -73,6 +81,32 @@ func (c *Check) Lease() Lease {
 type Lease struct {
 	CheckID int64
 	Attempt int
+}
+
+// HTTPResult is the outcome of the HTTP stage. If the request failed, it holds the
+// last URL reached and its status, which are empty if nothing responded.
+type HTTPResult struct {
+	FinalURL       string
+	StatusCode     *int
+	IsAvailable    bool
+	ResponseTimeMS *int64
+	RedirectChain  []RedirectHop
+}
+
+// RedirectCount returns the number of redirects followed. The last entry of the
+// chain is not a redirect if the check finished, and if it was cut short, the
+// redirect it records was not followed.
+func (r HTTPResult) RedirectCount() int {
+	if len(r.RedirectChain) == 0 {
+		return 0
+	}
+	return len(r.RedirectChain) - 1
+}
+
+// MetadataResult is the outcome of the metadata stage. Empty means not found.
+type MetadataResult struct {
+	Title       string
+	Description string
 }
 
 // CheckOutcome is the final state of a processed check.

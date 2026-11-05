@@ -197,6 +197,96 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		wantLeaseLost(t, db.CompleteCheck(ctx, lease, outcome))
 	})
 
+	t.Run("stage results are stored", func(t *testing.T) {
+		db := open(t)
+		check := create(t, db, "https://example.com")
+		lease := claim(t, db, longTTL).Lease()
+
+		status, elapsed := 200, int64(288)
+		chain := []models.RedirectHop{
+			{URL: "https://example.com", StatusCode: 301, DurationMS: 84},
+			{URL: "https://new.example/ключ?a=1&b=<2>", StatusCode: 200, DurationMS: 143},
+		}
+		err := db.SaveHTTPResult(ctx, lease, models.HTTPResult{
+			FinalURL:       "https://new.example/",
+			StatusCode:     &status,
+			IsAvailable:    true,
+			ResponseTimeMS: &elapsed,
+			RedirectChain:  chain,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Visible before the check finishes, so a later crash cannot lose it.
+		got := get(t, db, check.ID)
+		if got.Status != models.StatusRunning || got.FinalURL == nil || *got.FinalURL != "https://new.example/" {
+			t.Errorf("got = %+v", got)
+		}
+		if got.HTTPStatusCode == nil || *got.HTTPStatusCode != 200 || got.IsAvailable == nil || !*got.IsAvailable {
+			t.Errorf("status = %v, available = %v", got.HTTPStatusCode, got.IsAvailable)
+		}
+		if got.ResponseTimeMS == nil || *got.ResponseTimeMS != 288 || got.RedirectCount != 1 {
+			t.Errorf("response time = %v, redirects = %d", got.ResponseTimeMS, got.RedirectCount)
+		}
+		if len(got.RedirectChain) != 2 || got.RedirectChain[1] != chain[1] {
+			t.Errorf("chain = %+v", got.RedirectChain)
+		}
+
+		if err := db.SaveMetadataResult(ctx, lease, models.MetadataResult{Title: "Заголовок"}); err != nil {
+			t.Fatal(err)
+		}
+		got = get(t, db, check.ID)
+		if got.MetadataStatus != models.StageSuccess || got.Title == nil || *got.Title != "Заголовок" {
+			t.Errorf("metadata = %q, %v", got.MetadataStatus, got.Title)
+		}
+		if got.Description != nil {
+			t.Errorf("an empty description must stay NULL: %q", *got.Description)
+		}
+	})
+
+	t.Run("failed request stores empty results", func(t *testing.T) {
+		db := open(t)
+		check := create(t, db, "https://example.com")
+		if err := db.SaveHTTPResult(ctx, claim(t, db, longTTL).Lease(), models.HTTPResult{}); err != nil {
+			t.Fatal(err)
+		}
+		got := get(t, db, check.ID)
+		if got.FinalURL != nil || got.HTTPStatusCode != nil || got.ResponseTimeMS != nil || got.RedirectChain != nil {
+			t.Errorf("got = %+v", got)
+		}
+		if got.IsAvailable == nil || *got.IsAvailable || got.RedirectCount != 0 {
+			t.Errorf("available = %v, redirects = %d", got.IsAvailable, got.RedirectCount)
+		}
+	})
+
+	t.Run("retry replaces results of the interrupted attempt", func(t *testing.T) {
+		db := open(t)
+		check := create(t, db, "https://example.com")
+		first := claim(t, db, longTTL).Lease()
+		if err := db.SaveMetadataResult(ctx, first, models.MetadataResult{Title: "Old", Description: "Old"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.ReleaseCheck(ctx, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SaveHTTPResult(ctx, claim(t, db, longTTL).Lease(), models.HTTPResult{}); err != nil {
+			t.Fatal(err)
+		}
+		got := get(t, db, check.ID)
+		if got.Title != nil || got.Description != nil || got.MetadataStatus != models.StagePending {
+			t.Errorf("got = %+v", got)
+		}
+	})
+
+	t.Run("stage results need a valid lease", func(t *testing.T) {
+		db := open(t)
+		create(t, db, "https://example.com")
+		stale := claim(t, db, shortTTL).Lease()
+		recoverExpired(t, db, 3)
+		wantLeaseLost(t, db.SaveHTTPResult(ctx, stale, models.HTTPResult{}))
+		wantLeaseLost(t, db.SaveMetadataResult(ctx, stale, models.MetadataResult{}))
+	})
+
 	t.Run("complete without error leaves error fields empty", func(t *testing.T) {
 		db := open(t)
 		check := create(t, db, "https://example.com")

@@ -1,5 +1,5 @@
 # Build from the repository root: docker build -f docker/api/Dockerfile .
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /build
 COPY src/go.mod src/go.sum ./
 RUN go mod download

@@ -115,6 +115,45 @@ func (d *DB) ReleaseCheck(ctx context.Context, lease models.Lease) error {
 	return leaseResult(result, err)
 }
 
+// SaveHTTPResult stores the HTTP stage's result.
+func (d *DB) SaveHTTPResult(ctx context.Context, lease models.Lease, r models.HTTPResult) error {
+	var chain any // stays NULL when empty
+	if len(r.RedirectChain) > 0 {
+		encoded, err := json.Marshal(r.RedirectChain)
+		if err != nil {
+			return fmt.Errorf("encode redirect chain: %w", err)
+		}
+		chain = string(encoded)
+	}
+	result, err := d.sql.ExecContext(ctx, `
+		UPDATE checks SET
+			final_url = NULLIF($3, ''),
+			http_status_code = $4,
+			is_available = $5,
+			response_time_ms = $6,
+			redirect_count = $7,
+			redirect_chain = $8,
+			metadata_status = 'pending',
+			title = NULL,
+			description = NULL
+		WHERE id = $1 AND attempts = $2 AND status = 'running'`,
+		lease.CheckID, lease.Attempt, r.FinalURL, r.StatusCode, r.IsAvailable, r.ResponseTimeMS,
+		r.RedirectCount(), chain)
+	return leaseResult(result, err)
+}
+
+// SaveMetadataResult stores the metadata stage's result.
+func (d *DB) SaveMetadataResult(ctx context.Context, lease models.Lease, r models.MetadataResult) error {
+	result, err := d.sql.ExecContext(ctx, `
+		UPDATE checks SET
+			metadata_status = 'success',
+			title = NULLIF($3, ''),
+			description = NULLIF($4, '')
+		WHERE id = $1 AND attempts = $2 AND status = 'running'`,
+		lease.CheckID, lease.Attempt, r.Title, r.Description)
+	return leaseResult(result, err)
+}
+
 // CompleteCheck stores the final state.
 func (d *DB) CompleteCheck(ctx context.Context, lease models.Lease, outcome models.CheckOutcome) error {
 	result, err := d.sql.ExecContext(ctx, `

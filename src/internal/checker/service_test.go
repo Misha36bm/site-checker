@@ -37,7 +37,7 @@ var limits = Limits{MaxPendingChecks: 2, MaxURLLength: 2048}
 
 func TestCreateQueuesValidURL(t *testing.T) {
 	store := &fakeStore{pending: 1}
-	check, err := NewService(store, limits).Create(context.Background(), "https://example.com")
+	check, err := NewService(store, netguard.NewPolicy(nil), limits).Create(context.Background(), "https://example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestCreateQueuesValidURL(t *testing.T) {
 
 func TestCreateRejectsInvalidURL(t *testing.T) {
 	store := &fakeStore{}
-	_, err := NewService(store, limits).Create(context.Background(), "ftp://example.com")
+	_, err := NewService(store, netguard.NewPolicy(nil), limits).Create(context.Background(), "ftp://example.com")
 	if !netguard.IsInvalidURL(err) {
 		t.Fatalf("err = %v", err)
 	}
@@ -57,9 +57,20 @@ func TestCreateRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsForbiddenAddress(t *testing.T) {
+	store := &fakeStore{}
+	_, err := NewService(store, netguard.NewPolicy(nil), limits).Create(context.Background(), "http://127.0.0.1/")
+	if !netguard.IsBlocked(err) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(store.created) != 0 {
+		t.Error("a forbidden URL was stored")
+	}
+}
+
 func TestCreateRejectsWhenQueueIsFull(t *testing.T) {
 	store := &fakeStore{pending: 2}
-	_, err := NewService(store, limits).Create(context.Background(), "https://example.com")
+	_, err := NewService(store, netguard.NewPolicy(nil), limits).Create(context.Background(), "https://example.com")
 	if !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("err = %v", err)
 	}
@@ -70,7 +81,7 @@ func TestCreateRejectsWhenQueueIsFull(t *testing.T) {
 
 func TestCreateReportsStoreError(t *testing.T) {
 	boom := errors.New("boom")
-	_, err := NewService(&fakeStore{countErr: boom}, limits).Create(context.Background(), "https://example.com")
+	_, err := NewService(&fakeStore{countErr: boom}, netguard.NewPolicy(nil), limits).Create(context.Background(), "https://example.com")
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v", err)
 	}
@@ -78,7 +89,7 @@ func TestCreateReportsStoreError(t *testing.T) {
 
 func TestGetTranslatesNotFound(t *testing.T) {
 	store := &fakeStore{getErr: database.ErrNotFound}
-	if _, err := NewService(store, limits).Get(context.Background(), 1); !errors.Is(err, ErrCheckNotFound) {
+	if _, err := NewService(store, netguard.NewPolicy(nil), limits).Get(context.Background(), 1); !errors.Is(err, ErrCheckNotFound) {
 		t.Fatalf("err = %v", err)
 	}
 }

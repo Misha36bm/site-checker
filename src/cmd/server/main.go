@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"github.com/Misha36bm/site-checker/src/internal/config"
 	"github.com/Misha36bm/site-checker/src/internal/database"
 	_ "github.com/Misha36bm/site-checker/src/internal/database/postgres" // registers the driver
+	"github.com/Misha36bm/site-checker/src/internal/netguard"
 	"github.com/Misha36bm/site-checker/src/internal/worker"
 )
 
@@ -67,11 +69,22 @@ func run(ctx context.Context, get config.Getter) error {
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	defer cancel()
+
+	policy := netguard.NewPolicy(app.AllowedCIDRs)
+	dialer := &netguard.Dialer{Policy: policy, Resolver: net.DefaultResolver}
+	httpChecker := checker.NewHTTPChecker(checker.HTTPConfig{
+		Timeout:      app.HTTP.Timeout,
+		MaxRedirects: app.HTTP.MaxRedirects,
+		MaxBodyBytes: app.HTTP.MaxBodyBytes,
+		MaxURLLength: app.MaxURLLength,
+		UserAgent:    app.HTTP.UserAgent,
+	}, policy, dialer.DialContext)
+
 	workers.Go(func() {
-		worker.NewPool(db, checker.StubProcessor{}, app.Worker).Run(ctx)
+		worker.NewPool(db, checker.NewProcessor(db, httpChecker), app.Worker).Run(ctx)
 	})
 
-	service := checker.NewService(db, checker.Limits{
+	service := checker.NewService(db, policy, checker.Limits{
 		MaxPendingChecks: app.MaxPendingChecks,
 		MaxURLLength:     app.MaxURLLength,
 	})

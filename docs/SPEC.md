@@ -614,7 +614,9 @@ If `CHECK_RETENTION` is above zero, a background job deletes older checks with t
 
 ### SSRF enforcement
 
-Checking a URL before connecting is not enough, because a hostname can resolve differently at connect time. All outbound check traffic therefore goes through one guarded dialer in `internal/netguard`, which validates the actual IP in `net.Dialer.Control`, at the moment of connection.
+Checking a URL before connecting is not enough, because a hostname can resolve differently at connect time. All outbound check traffic therefore goes through one guarded dialer in `internal/netguard`. It resolves the name once, refuses the connection if any resolved address is forbidden, dials the resulting IP directly so there is no second lookup to rebind, and validates that IP again in `net.Dialer.Control`, at the moment of connection.
+
+URLs whose last host label is a number or hex value (`2130706433`, `0x7f.1`) are rejected, because browsers read them as IPv4 addresses.
 
 Chromium resolves DNS on its own, and CDP request interception does not see WebSocket or WebRTC traffic, so interception is not a sufficient control. Instead:
 
@@ -694,6 +696,7 @@ DB_CONNECT_TIMEOUT=60s
 HTTP_TIMEOUT=15s
 HTTP_MAX_REDIRECTS=10
 HTTP_MAX_BODY_BYTES=5242880
+HTTP_USER_AGENT=site-checker/1.0
 
 SSRF_ALLOWED_CIDRS=
 
