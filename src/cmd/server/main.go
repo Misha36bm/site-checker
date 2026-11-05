@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Misha36bm/site-checker/src/internal/api/routes"
+	"github.com/Misha36bm/site-checker/src/internal/browser"
 	"github.com/Misha36bm/site-checker/src/internal/checker"
 	"github.com/Misha36bm/site-checker/src/internal/config"
 	"github.com/Misha36bm/site-checker/src/internal/database"
@@ -63,12 +64,11 @@ func run(ctx context.Context, get config.Getter) error {
 		return fmt.Errorf("migrate database: %w", err)
 	}
 
-	// Whatever ends this function, workers are told to stop and then waited for,
-	// before the database closes. Deferred calls run in reverse order.
+	// Deferred calls run in reverse order. Whatever ends this function, workers are
+	// told to stop and waited for, then the proxy closes, then the database.
 	ctx, cancel := context.WithCancel(ctx)
-	var workers sync.WaitGroup
-	defer workers.Wait()
 	defer cancel()
+	var workers sync.WaitGroup
 
 	policy := netguard.NewPolicy(app.AllowedCIDRs)
 	dialer := &netguard.Dialer{Policy: policy, Resolver: net.DefaultResolver}
@@ -80,8 +80,45 @@ func run(ctx context.Context, get config.Getter) error {
 		UserAgent:    app.HTTP.UserAgent,
 	}, policy, dialer.DialContext)
 
+	screenshots, err := browser.NewStorage(app.Browser.StoragePath)
+	if err != nil {
+		return err
+	}
+	chromium := browser.New(browser.Config{
+		CDPURL:       app.Browser.CDPURL,
+		Timeout:      app.Browser.Timeout,
+		SettleDelay:  app.Browser.SettleDelay,
+		Width:        int64(app.Browser.ViewportWidth),
+		Height:       int64(app.Browser.ViewportHeight),
+		MaxRedirects: app.HTTP.MaxRedirects,
+		MaxBytes:     app.Browser.MaxBytes,
+		Concurrency:  app.Browser.Concurrency,
+	}, net.DefaultResolver)
+
+	// The proxy closes after the workers stop, because checks finishing during
+	// shutdown still need it. The listener opens here so a failure stops startup.
+	proxyListener, err := net.Listen("tcp", app.Browser.ProxyListen)
+	if err != nil {
+		return fmt.Errorf("listen for browser proxy: %w", err)
+	}
+	proxy := &http.Server{
+		Handler:           netguard.NewProxy(policy, dialer.DialContext, app.Browser.Timeout),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       time.Minute,
+	}
+	defer proxy.Close()
+	go func() {
+		if err := proxy.Serve(proxyListener); !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("browser proxy stopped", "error", err)
+		}
+	}()
+
+	defer func() {
+		cancel()
+		workers.Wait()
+	}()
 	workers.Go(func() {
-		worker.NewPool(db, checker.NewProcessor(db, httpChecker), app.Worker).Run(ctx)
+		worker.NewPool(db, checker.NewProcessor(db, httpChecker, chromium, screenshots), app.Worker).Run(ctx)
 	})
 
 	service := checker.NewService(db, policy, checker.Limits{

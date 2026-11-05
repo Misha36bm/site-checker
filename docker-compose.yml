@@ -9,8 +9,14 @@ services:
     stop_grace_period: 45s
     ports:
       - "${API_PUBLISH_HOST:-127.0.0.1}:${API_PUBLISH_PORT:-8080}:${APP_PORT:-8080}"
+    # Linux hosts need APP_UID and APP_GID set, so the API can write to the folder.
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
+    volumes:
+      # A folder on the host, so screenshots can be opened directly.
+      - ${SCREENSHOT_HOST_PATH:-./storage/screenshots}:${SCREENSHOT_STORAGE_PATH:-/app/storage/screenshots}
     networks:
       - backend
+      - browser
       - egress
     depends_on:
       # Not required, so the API can also run against an external database.
@@ -23,6 +29,32 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
+
+  browser:
+    build:
+      context: .
+      dockerfile: docker/browser/Dockerfile
+    restart: unless-stopped
+    # No published ports and only this network: CDP stays private, and the egress
+    # proxy on the API is the sole way out.
+    networks:
+      - browser
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    shm_size: 256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${BROWSER_MEMORY_LIMIT:-1g}
+    cpus: ${BROWSER_CPU_LIMIT:-1.5}
+    pids_limit: ${BROWSER_PIDS_LIMIT:-512}
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9222"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   postgres:
     image: postgres:17-alpine
@@ -45,6 +77,9 @@ services:
 networks:
   # Database access. No route outside Docker.
   backend:
+    internal: true
+  # CDP and the egress proxy. Chromium has no other network.
+  browser:
     internal: true
   # Outbound checks and the published API port.
   egress:

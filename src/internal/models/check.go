@@ -109,6 +109,14 @@ type MetadataResult struct {
 	Description string
 }
 
+// ScreenshotResult is the outcome of the screenshot stage.
+type ScreenshotResult struct {
+	Status          string
+	Path            string // storage key, not a filesystem path
+	Error           string // safe to show clients
+	BrowserFinalURL string
+}
+
 // CheckOutcome is the final state of a processed check.
 type CheckOutcome struct {
 	Status           string

@@ -28,7 +28,28 @@ type App struct {
 	Worker           Worker
 	HTTP             HTTP
 	AllowedCIDRs     []netip.Prefix
+	Browser          Browser
 }
+
+// Browser holds the settings of the browser and its egress proxy.
+type Browser struct {
+	CDPURL         string
+	ProxyListen    string
+	Timeout        time.Duration
+	SettleDelay    time.Duration
+	ViewportWidth  int
+	ViewportHeight int
+	Concurrency    int
+	StoragePath    string
+	MaxBytes       int64
+}
+
+// Largest allowed viewport. Screenshots capture exactly this area, so it bounds
+// their dimensions.
+const (
+	maxViewportWidth  = 3840
+	maxViewportHeight = 2160
+)
 
 // HTTP holds the settings of the HTTP checker.
 type HTTP struct {
@@ -89,6 +110,10 @@ func Load(get Getter) (App, error) {
 	if err != nil {
 		return App{}, err
 	}
+	browser, err := loadBrowser(get)
+	if err != nil {
+		return App{}, err
+	}
 	return App{
 		Env:              String(get, "APP_ENV", "development"),
 		Host:             String(get, "APP_HOST", "0.0.0.0"),
@@ -100,6 +125,51 @@ func Load(get Getter) (App, error) {
 		Worker:           worker,
 		HTTP:             httpConfig,
 		AllowedCIDRs:     allowed,
+		Browser:          browser,
+	}, nil
+}
+
+func loadBrowser(get Getter) (Browser, error) {
+	timeout, err := Duration(get, "BROWSER_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return Browser{}, err
+	}
+	if timeout == 0 {
+		return Browser{}, errors.New("BROWSER_TIMEOUT must be above zero")
+	}
+	settle, err := Duration(get, "BROWSER_SETTLE_DELAY", 500*time.Millisecond)
+	if err != nil {
+		return Browser{}, err
+	}
+	width, err := Int(get, "BROWSER_VIEWPORT_WIDTH", 1366, 1)
+	if err != nil {
+		return Browser{}, err
+	}
+	height, err := Int(get, "BROWSER_VIEWPORT_HEIGHT", 768, 1)
+	if err != nil {
+		return Browser{}, err
+	}
+	if width > maxViewportWidth || height > maxViewportHeight {
+		return Browser{}, fmt.Errorf("viewport %dx%d exceeds the maximum of %dx%d", width, height, maxViewportWidth, maxViewportHeight)
+	}
+	concurrency, err := Int(get, "BROWSER_MAX_CONCURRENCY", 2, 1)
+	if err != nil {
+		return Browser{}, err
+	}
+	maxBytes, err := Int(get, "SCREENSHOT_MAX_BYTES", 10<<20, 1)
+	if err != nil {
+		return Browser{}, err
+	}
+	return Browser{
+		CDPURL:         String(get, "BROWSER_CDP_URL", "http://browser:9222"),
+		ProxyListen:    String(get, "BROWSER_PROXY_LISTEN", "0.0.0.0:3128"),
+		Timeout:        timeout,
+		SettleDelay:    settle,
+		ViewportWidth:  width,
+		ViewportHeight: height,
+		Concurrency:    concurrency,
+		StoragePath:    String(get, "SCREENSHOT_STORAGE_PATH", "/app/storage/screenshots"),
+		MaxBytes:       int64(maxBytes),
 	}, nil
 }
 

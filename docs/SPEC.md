@@ -255,7 +255,7 @@ The application must be accessible from the host machine.
 - Services communicate through Docker networks, segmented as described below.
 - Database and CDP ports are not published to the host.
 - API ports are exposed to the host machine.
-- Screenshots use persistent Docker volumes.
+- Screenshots are stored in a host folder mounted into the API container, so they can be opened directly on the computer.
 - Database data uses persistent Docker volumes.
 - Configuration is passed through environment variables.
 - Containers should support automatic restart policies.
@@ -394,7 +394,7 @@ site-checker/
 └── CLAUDE.md
 ```
 
-This structure is a starting point. Keep Docker infrastructure in `docker/`, application source code in `src/`, and persistent application data in `storage/`.
+This structure is a starting point. Keep Docker infrastructure in `docker/` and application source code in `src/`. Database data lives in the named Docker volume `postgres_data`. Screenshots live in the host folder `SCREENSHOT_HOST_PATH`, by default `storage/screenshots/`, which is ignored by Git.
 
 Do not put application source code or Go business logic inside Docker configuration directories.
 
@@ -625,6 +625,10 @@ Chromium resolves DNS on its own, and CDP request interception does not see WebS
 - Chromium runs with `--proxy-server=...`, `--proxy-bypass-list=<-loopback>` (so loopback also goes through the proxy) and `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`.
 - CDP is reachable only from the `browser` network.
 
+The proxy's own 403 reaches the page as an ordinary response, carrying nothing from the destination. Tests of this behavior must check what actually came back: to a no-cors `fetch`, a blocked request looks like success.
+
+Chromium runs with `--no-sandbox`, because its sandbox needs privileges the container deliberately lacks. The container takes that role: unprivileged user, no capabilities, `no-new-privileges`, read-only root filesystem, and the network isolation above.
+
 `SSRF_ALLOWED_CIDRS` lists ranges exempt from blocking, for monitoring internal sites and for end-to-end tests. It is empty by default. Cloud metadata addresses stay blocked regardless.
 
 ### Resource Limits
@@ -702,12 +706,14 @@ SSRF_ALLOWED_CIDRS=
 
 BROWSER_CDP_URL=http://browser:9222
 BROWSER_PROXY_LISTEN=0.0.0.0:3128
-BROWSER_PROXY_URL=http://api:3128
 BROWSER_TIMEOUT=30s
 BROWSER_SETTLE_DELAY=500ms
 BROWSER_VIEWPORT_WIDTH=1366
 BROWSER_VIEWPORT_HEIGHT=768
 BROWSER_MAX_CONCURRENCY=2
+BROWSER_MEMORY_LIMIT=1g
+BROWSER_CPU_LIMIT=1.5
+BROWSER_PIDS_LIMIT=512
 
 MAX_CONCURRENT_CHECKS=5
 MAX_PENDING_CHECKS=1000
@@ -719,6 +725,10 @@ WORKER_SHUTDOWN_TIMEOUT=30s
 # 0 keeps checks and screenshots forever
 CHECK_RETENTION=0
 
+SCREENSHOT_HOST_PATH=./storage/screenshots
+# Linux only: the owner of that folder
+# APP_UID=1000
+# APP_GID=1000
 SCREENSHOT_STORAGE_PATH=/app/storage/screenshots
 SCREENSHOT_MAX_BYTES=10485760
 ```

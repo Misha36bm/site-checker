@@ -7,8 +7,9 @@
 *.out
 /src/server
 
-# Persistent application data
-/storage/
+# Screenshots, kept on the host
+/storage/screenshots/*
+!/storage/screenshots/.gitkeep
 
 # OS and editors
 .DS_Store

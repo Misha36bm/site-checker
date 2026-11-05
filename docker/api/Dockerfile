@@ -8,8 +8,11 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/serve
 
 FROM alpine:3.22
 # ca-certificates: verifying TLS of checked sites. busybox wget: the Compose healthcheck.
+# The directory is created here so a new named volume inherits its ownership.
 RUN apk add --no-cache ca-certificates \
-    && adduser -D -H -u 10001 app
+    && adduser -D -H -u 10001 app \
+    && mkdir -p /app/storage/screenshots \
+    && chown -R app:app /app/storage
 COPY --from=build /out/server /app/server
 USER app
 EXPOSE 8080

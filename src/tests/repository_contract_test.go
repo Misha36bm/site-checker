@@ -244,6 +244,37 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		}
 	})
 
+	t.Run("screenshot results are stored", func(t *testing.T) {
+		db := open(t)
+		check := create(t, db, "https://example.com")
+		lease := claim(t, db, longTTL).Lease()
+
+		err := db.SaveScreenshotResult(ctx, lease, models.ScreenshotResult{
+			Status:          models.StageSuccess,
+			Path:            "1.png",
+			BrowserFinalURL: "https://final.example/",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := get(t, db, check.ID)
+		if got.ScreenshotStatus != models.StageSuccess || got.ScreenshotPath == nil || *got.ScreenshotPath != "1.png" {
+			t.Errorf("got = %+v", got)
+		}
+		if got.BrowserFinalURL == nil || *got.BrowserFinalURL != "https://final.example/" || got.ScreenshotError != nil {
+			t.Errorf("final URL = %v, error = %v", got.BrowserFinalURL, got.ScreenshotError)
+		}
+
+		err = db.SaveScreenshotResult(ctx, lease, models.ScreenshotResult{Status: models.StageFailed, Error: "failed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = get(t, db, check.ID)
+		if got.ScreenshotPath != nil || got.ScreenshotError == nil || *got.ScreenshotError != "failed" {
+			t.Errorf("path = %v, error = %v", got.ScreenshotPath, got.ScreenshotError)
+		}
+	})
+
 	t.Run("failed request stores empty results", func(t *testing.T) {
 		db := open(t)
 		check := create(t, db, "https://example.com")
@@ -266,6 +297,10 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		if err := db.SaveMetadataResult(ctx, first, models.MetadataResult{Title: "Old", Description: "Old"}); err != nil {
 			t.Fatal(err)
 		}
+		old := models.ScreenshotResult{Status: models.StageSuccess, Path: "1.png", BrowserFinalURL: "https://old.example/"}
+		if err := db.SaveScreenshotResult(ctx, first, old); err != nil {
+			t.Fatal(err)
+		}
 		if err := db.ReleaseCheck(ctx, first); err != nil {
 			t.Fatal(err)
 		}
@@ -274,6 +309,9 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		}
 		got := get(t, db, check.ID)
 		if got.Title != nil || got.Description != nil || got.MetadataStatus != models.StagePending {
+			t.Errorf("got = %+v", got)
+		}
+		if got.ScreenshotPath != nil || got.BrowserFinalURL != nil || got.ScreenshotStatus != models.StagePending {
 			t.Errorf("got = %+v", got)
 		}
 	})
@@ -285,6 +323,7 @@ func runRepositoryContract(t *testing.T, open func(t *testing.T) database.Databa
 		recoverExpired(t, db, 3)
 		wantLeaseLost(t, db.SaveHTTPResult(ctx, stale, models.HTTPResult{}))
 		wantLeaseLost(t, db.SaveMetadataResult(ctx, stale, models.MetadataResult{}))
+		wantLeaseLost(t, db.SaveScreenshotResult(ctx, stale, models.ScreenshotResult{Status: models.StageFailed}))
 	})
 
 	t.Run("complete without error leaves error fields empty", func(t *testing.T) {

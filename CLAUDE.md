@@ -13,7 +13,7 @@ cd src && go test ./...
 cd src && go test -tags=integration ./...
 ```
 
-`go test ./...` must pass without Docker. Tests that need Docker or a real database use the `integration` build tag and need the `POSTGRES_*` settings in the environment.
+`go test ./...` must pass without Docker. Tests that need Docker or a real database use the `integration` build tag and need `POSTGRES_*` and `BROWSER_CDP_URL` in the environment. Database and CDP ports are not published, so run them from inside the Docker network.
 
 Before the first `docker compose up -d`, run `cp .env.example .env` and change the passwords.
 
@@ -21,7 +21,7 @@ Before the first `docker compose up -d`, run `cp .env.example .env` and change t
 
 - `src/`: Go application source, module root, migrations.
 - `docker/`: Dockerfiles and database configuration. No application code.
-- `storage/`: persistent application data.
+- `storage/screenshots/`: screenshots, mounted from the host. Not committed.
 - `docs/`: specification.
 
 ## Development Guidelines

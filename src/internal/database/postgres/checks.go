@@ -135,7 +135,11 @@ func (d *DB) SaveHTTPResult(ctx context.Context, lease models.Lease, r models.HT
 			redirect_chain = $8,
 			metadata_status = 'pending',
 			title = NULL,
-			description = NULL
+			description = NULL,
+			screenshot_status = 'pending',
+			screenshot_path = NULL,
+			screenshot_error = NULL,
+			browser_final_url = NULL
 		WHERE id = $1 AND attempts = $2 AND status = 'running'`,
 		lease.CheckID, lease.Attempt, r.FinalURL, r.StatusCode, r.IsAvailable, r.ResponseTimeMS,
 		r.RedirectCount(), chain)
@@ -151,6 +155,19 @@ func (d *DB) SaveMetadataResult(ctx context.Context, lease models.Lease, r model
 			description = NULLIF($4, '')
 		WHERE id = $1 AND attempts = $2 AND status = 'running'`,
 		lease.CheckID, lease.Attempt, r.Title, r.Description)
+	return leaseResult(result, err)
+}
+
+// SaveScreenshotResult stores the screenshot stage's result.
+func (d *DB) SaveScreenshotResult(ctx context.Context, lease models.Lease, r models.ScreenshotResult) error {
+	result, err := d.sql.ExecContext(ctx, `
+		UPDATE checks SET
+			screenshot_status = $3,
+			screenshot_path = NULLIF($4, ''),
+			screenshot_error = NULLIF($5, ''),
+			browser_final_url = NULLIF($6, '')
+		WHERE id = $1 AND attempts = $2 AND status = 'running'`,
+		lease.CheckID, lease.Attempt, r.Status, r.Path, r.Error, r.BrowserFinalURL)
 	return leaseResult(result, err)
 }
 

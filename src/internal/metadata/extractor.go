@@ -73,7 +73,7 @@ func Extract(body []byte, contentType string) (Metadata, error) {
 				}
 				titleSeen = true
 				if tokenizer.Next() == html.TextToken {
-					found.Title = clean(tokenizer.Token().Data)
+					found.Title = Clean(tokenizer.Token().Data)
 				}
 			case "meta":
 				if description, ok := metaDescription(token); ok && !descSeen {
@@ -99,12 +99,12 @@ func metaDescription(token html.Token) (string, bool) {
 	if !strings.EqualFold(strings.TrimSpace(name), "description") {
 		return "", false
 	}
-	return clean(content), true
+	return Clean(content), true
 }
 
-// clean makes page text safe to store: valid UTF-8, no NUL bytes (PostgreSQL TEXT
+// Clean makes page text safe to store: valid UTF-8, no NUL bytes (PostgreSQL TEXT
 // rejects them), collapsed whitespace, and a bounded length.
-func clean(value string) string {
+func Clean(value string) string {
 	value = strings.ToValidUTF8(value, "�")
 	value = strings.ReplaceAll(value, "\x00", "")
 	value = strings.Join(strings.Fields(value), " ")

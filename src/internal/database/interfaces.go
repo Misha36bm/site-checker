@@ -51,12 +51,15 @@ type CheckRepository interface {
 	// attempt, for work interrupted by a graceful shutdown. It returns
 	// ErrLeaseLost if the claim is gone.
 	ReleaseCheck(ctx context.Context, lease models.Lease) error
-	// SaveHTTPResult stores the HTTP stage's result and clears metadata left by an
-	// earlier, interrupted attempt. It returns ErrLeaseLost if the claim is gone.
+	// SaveHTTPResult stores the HTTP stage's result and clears later stages' results
+	// left by an earlier, interrupted attempt. It returns ErrLeaseLost if the claim is gone.
 	SaveHTTPResult(ctx context.Context, lease models.Lease, result models.HTTPResult) error
 	// SaveMetadataResult stores the metadata stage's result. It returns ErrLeaseLost
 	// if the claim is gone.
 	SaveMetadataResult(ctx context.Context, lease models.Lease, result models.MetadataResult) error
+	// SaveScreenshotResult stores the screenshot stage's result. It returns
+	// ErrLeaseLost if the claim is gone.
+	SaveScreenshotResult(ctx context.Context, lease models.Lease, result models.ScreenshotResult) error
 	// CompleteCheck stores the final state. It returns ErrLeaseLost if the claim
 	// is gone.
 	CompleteCheck(ctx context.Context, lease models.Lease, outcome models.CheckOutcome) error
