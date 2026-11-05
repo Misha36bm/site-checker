@@ -5,6 +5,8 @@ services:
       dockerfile: docker/api/Dockerfile
     restart: unless-stopped
     env_file: .env
+    # Must exceed WORKER_SHUTDOWN_TIMEOUT, or Docker kills checks still finishing.
+    stop_grace_period: 45s
     ports:
       - "${API_PUBLISH_HOST:-127.0.0.1}:${API_PUBLISH_PORT:-8080}:${APP_PORT:-8080}"
     networks:

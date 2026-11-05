@@ -11,8 +11,9 @@ import (
 )
 
 type fakeDB struct {
-	pingErrs []error
-	pings    int
+	CheckRepository // not used by these tests
+	pingErrs        []error
+	pings           int
 }
 
 func (f *fakeDB) Ping(context.Context) error {

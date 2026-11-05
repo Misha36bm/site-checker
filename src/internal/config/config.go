@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -15,9 +16,22 @@ type Getter func(key string) string
 // App holds the settings of the application process itself. Database settings
 // are loaded by the database package, because they depend on the driver.
 type App struct {
-	Env             string
-	Host            string
-	Port            int
+	Env              string
+	Host             string
+	Port             int
+	ShutdownTimeout  time.Duration
+	MaxBodyBytes     int64
+	MaxURLLength     int
+	MaxPendingChecks int
+	Worker           Worker
+}
+
+// Worker holds the settings of the background worker pool.
+type Worker struct {
+	Concurrency     int
+	PollInterval    time.Duration
+	LockTTL         time.Duration
+	MaxAttempts     int
 	ShutdownTimeout time.Duration
 }
 
@@ -39,10 +53,68 @@ func Load(get Getter) (App, error) {
 	if err != nil {
 		return App{}, err
 	}
+	maxBody, err := Int(get, "API_MAX_BODY_BYTES", 4096, 1)
+	if err != nil {
+		return App{}, err
+	}
+	maxURL, err := Int(get, "API_MAX_URL_LENGTH", 2048, 1)
+	if err != nil {
+		return App{}, err
+	}
+	maxPending, err := Int(get, "MAX_PENDING_CHECKS", 1000, 1)
+	if err != nil {
+		return App{}, err
+	}
+	worker, err := loadWorker(get)
+	if err != nil {
+		return App{}, err
+	}
 	return App{
-		Env:             String(get, "APP_ENV", "development"),
-		Host:            String(get, "APP_HOST", "0.0.0.0"),
-		Port:            port,
+		Env:              String(get, "APP_ENV", "development"),
+		Host:             String(get, "APP_HOST", "0.0.0.0"),
+		Port:             port,
+		ShutdownTimeout:  shutdown,
+		MaxBodyBytes:     int64(maxBody),
+		MaxURLLength:     maxURL,
+		MaxPendingChecks: maxPending,
+		Worker:           worker,
+	}, nil
+}
+
+func loadWorker(get Getter) (Worker, error) {
+	concurrency, err := Int(get, "MAX_CONCURRENT_CHECKS", 5, 1)
+	if err != nil {
+		return Worker{}, err
+	}
+	poll, err := Duration(get, "WORKER_POLL_INTERVAL", time.Second)
+	if err != nil {
+		return Worker{}, err
+	}
+	if poll == 0 {
+		return Worker{}, errors.New("WORKER_POLL_INTERVAL must be above zero")
+	}
+	lockTTL, err := Duration(get, "CHECK_LOCK_TTL", 2*time.Minute)
+	if err != nil {
+		return Worker{}, err
+	}
+	// Leases renew every third of the TTL, so a shorter TTL would renew too often
+	// and tolerate no database hiccup at all.
+	if lockTTL < 3*time.Second {
+		return Worker{}, errors.New("CHECK_LOCK_TTL must be at least 3s")
+	}
+	maxAttempts, err := Int(get, "CHECK_MAX_ATTEMPTS", 3, 1)
+	if err != nil {
+		return Worker{}, err
+	}
+	shutdown, err := Duration(get, "WORKER_SHUTDOWN_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return Worker{}, err
+	}
+	return Worker{
+		Concurrency:     concurrency,
+		PollInterval:    poll,
+		LockTTL:         lockTTL,
+		MaxAttempts:     maxAttempts,
 		ShutdownTimeout: shutdown,
 	}, nil
 }

@@ -580,12 +580,15 @@ The `checks` table is the queue, so pending work survives restarts.
 
 - Workers claim checks with `SELECT ... FOR UPDATE SKIP LOCKED`, setting `status=running`, `locked_until`, and incrementing `attempts`. This lives behind the repository interface.
 - Workers extend `locked_until` while they run.
+- `attempts` is also a fencing token: writes must match the claim's attempt number, so a worker whose claim expired cannot overwrite the current worker's results.
 - A `running` check with an expired `locked_until` goes back to `pending`. After `CHECK_MAX_ATTEMPTS` claims it becomes `failed` with `worker_abandoned`.
 - `MAX_CONCURRENT_CHECKS` limits checks in progress, and `BROWSER_MAX_CONCURRENCY` separately limits screenshot stages, because Chromium uses far more resources.
 
 ### Shutdown
 
 On SIGTERM the API stops accepting requests and workers stop claiming checks. In-progress checks get `WORKER_SHUTDOWN_TIMEOUT` to finish; the rest return to `pending`. The database connection closes last.
+
+A check returned to the queue this way does not consume an attempt. `stop_grace_period` in Docker Compose must exceed `WORKER_SHUTDOWN_TIMEOUT`.
 
 ### Retention
 

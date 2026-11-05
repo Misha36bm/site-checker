@@ -3,7 +3,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -29,16 +28,11 @@ func Health(db Pinger) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), healthPingTimeout)
 		defer cancel()
 
-		code, body := http.StatusOK, healthResponse{Status: "ok", Database: "ok"}
 		if err := db.Ping(ctx); err != nil {
 			slog.Error("health check: database unreachable", "error", err)
-			code, body = http.StatusServiceUnavailable, healthResponse{Status: "unavailable", Database: "unreachable"}
+			WriteJSON(w, http.StatusServiceUnavailable, healthResponse{Status: "unavailable", Database: "unreachable"})
+			return
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		if err := json.NewEncoder(w).Encode(body); err != nil {
-			slog.Error("health check: write response", "error", err)
-		}
+		WriteJSON(w, http.StatusOK, healthResponse{Status: "ok", Database: "ok"})
 	}
 }

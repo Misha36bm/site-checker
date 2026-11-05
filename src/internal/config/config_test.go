@@ -47,6 +47,12 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		"port too large":    {"APP_PORT": "70000"},
 		"bad duration":      {"APP_SHUTDOWN_TIMEOUT": "soon"},
 		"negative duration": {"APP_SHUTDOWN_TIMEOUT": "-1s"},
+		"no workers":        {"MAX_CONCURRENT_CHECKS": "0"},
+		"zero poll":         {"WORKER_POLL_INTERVAL": "0s"},
+		"short lock":        {"CHECK_LOCK_TTL": "1s"},
+		"zero attempts":     {"CHECK_MAX_ATTEMPTS": "0"},
+		"zero queue":        {"MAX_PENDING_CHECKS": "0"},
+		"zero body limit":   {"API_MAX_BODY_BYTES": "0"},
 	}
 	for name, values := range cases {
 		t.Run(name, func(t *testing.T) {
